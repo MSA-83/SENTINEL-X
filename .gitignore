@@ -3,10 +3,4 @@ dist/
 .wrangler/
 .dev.vars
 *.log
-.env
-.env.local
-.env.production
-pids/
-*.pid
-*.backup
-*.bak
+.DS_Store
