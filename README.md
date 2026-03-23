@@ -1,141 +1,133 @@
-# SENTINEL OS v2.0
+# SENTINEL OS v3.0 — Global Situational Awareness Platform
 
-## Global Situational Awareness Platform
+## Overview
+SENTINEL OS is a production-grade, multi-domain global situational awareness platform inspired by Beholder.me, Palantir Gotham, and NATO Common Operating Picture (COP) systems. It aggregates 16+ live OSINT data layers from 450+ catalogued intelligence sources into a unified military-grade dark ops interface.
 
-A unified Open Source Intelligence (OSINT) Common Operating Picture (COP) inspired by Beholder.me, Palantir Gotham, and NATO C2 systems. Edge-deployed on Cloudflare Pages with Hono framework.
+**Architecture**: Edge BFF (Backend-for-Frontend) on Cloudflare Workers/Pages + Hono  
+**Runtime**: Zero-dependency edge runtime — no servers, no databases, pure edge compute  
+**Design Language**: Palantir Gotham / NATO COP / Beholder.me dark ops aesthetic
+
+## Live Data Layers (16+)
+
+### Aviation Domain
+| Layer | Source | Update Rate | Key Required |
+|-------|--------|-------------|--------------|
+| Aircraft (ADS-B) | OpenSky Network | 30s | No |
+| Military Air | ADS-B Exchange (RapidAPI) | 30s | Yes (RAPIDAPI_KEY) |
+| Aviation WX (SIGMETs) | AVWX REST API | 30s | Yes (AVWX_KEY) |
+
+### Maritime Domain
+| Layer | Source | Update Rate | Key Required |
+|-------|--------|-------------|--------------|
+| Fishing Activity | Global Fishing Watch | 30s | Yes (GFW_TOKEN) |
+| Dark Fleet (AIS Gaps) | Global Fishing Watch | 30s | Yes (GFW_TOKEN) |
+| Maritime AIS | MarineTraffic | N/A | Missing |
+
+### Orbital/Space Domain
+| Layer | Source | Update Rate | Key Required |
+|-------|--------|-------------|--------------|
+| ISS Position | wheretheiss.at | 5s | No |
+| Satellites | N2YO + CelesTrak (SGP4) | 3min | Yes (N2YO_KEY) |
+| Space Debris | CelesTrak TLE (SGP4) | 3min | No |
+| Military Satellites | CelesTrak Military | 3min | No |
+
+### Environmental Domain
+| Layer | Source | Update Rate | Key Required |
+|-------|--------|-------------|--------------|
+| Seismic Events | USGS Earthquake API | 30s | No |
+| Wildfires (VIIRS) | NASA FIRMS | 30s | Yes (NASA_FIRMS_KEY) |
+| Storm Systems | OpenWeatherMap | 30s | Yes (OWM_KEY) |
+
+### Geopolitical/Intel Domain
+| Layer | Source | Update Rate | Key Required |
+|-------|--------|-------------|--------------|
+| Conflict Intel | GDELT 2.0 Articles (geocoded) | 30s | No |
+| Disasters | GDACS UN OCHA | 30s | No |
+| Cyber Threats | GDELT Cyber Articles | 30s | No |
+| Nuclear Intel | GDELT Nuclear Monitoring | 30s | No |
 
 ## Architecture
 
 ```
-CLIENT (Browser)                    EDGE (Cloudflare Workers)
-+---------------------------+       +---------------------------+
-| Leaflet.js Map            |       | Hono API Proxy            |
-| ESRI World Imagery        |  ---> | /api/proxy                |
-| Carto Dark Labels         |       |  - OpenSky ADS-B          |
-| satellite.js SGP4         |       |  - NASA FIRMS             |
-| Marker Clustering         |       |  - OpenWeatherMap         |
-| Threat Assessment Engine  |       |  - N2YO Satellites        |
-| Military Callsign DB      |       |  - GFW Fishing/Dark Fleet |
-| Squawk Intelligence       |       |  - AVWX SIGMETs           |
-| 14 Live Data Layers       |       |  - ADS-B Exchange (mil)   |
-+---------------------------+       |  - GDELT 2.0 Conflict     |
-                                    |  - GDACS Disasters        |
-FREE APIs (Direct from client):    |  - ReliefWeb UN OCHA      |
-  - USGS Earthquakes               +---------------------------+
-  - ISS Position (wheretheiss.at)
-  - CelesTrak TLE (7 constellation groups)
-  - ReliefWeb Disasters
+Browser ──→ Cloudflare Edge Worker (Hono BFF)
+               ├── /api/proxy ──→ OpenSky, GDACS, FIRMS, N2YO, GFW, ADS-B Exchange...
+               ├── /api/intel/gdelt ──→ GDELT 2.0 Article API → Server-side geocoding
+               ├── /api/fusion/zones ──→ Geopolitical zone definitions
+               ├── /api/health ──→ System health
+               ├── /api/status ──→ API key status
+               ├── /static/* ──→ CSS + JS (CDN-optimized)
+               └── / ──→ Main HTML (inline)
 ```
 
-## Live Data Layers (14)
-
-| Layer | Source | Update | Status |
-|-------|--------|--------|--------|
-| AIRCRAFT | OpenSky ADS-B | 30s | LIVE |
-| MILITARY AIR | ADS-B Exchange + Callsign DB | 30s | LIVE |
-| MARITIME AIS | MarineTraffic | - | KEY REQUIRED |
-| DARK FLEET | GFW Gap Events | 30s | LIVE |
-| FISHING | GFW Events API | 30s | LIVE |
-| ISS ZARYA | wheretheiss.at | 5s | LIVE |
-| SATELLITES | N2YO + CelesTrak SGP4 | 30s/3m | LIVE |
-| SPACE DEBRIS | CelesTrak TLE (Fengyun/Cosmos/Iridium) | 3m | LIVE |
-| SEISMIC | USGS Earthquake API | 30s | LIVE |
-| WILDFIRES | NASA FIRMS VIIRS | 30s | LIVE |
-| STORM SYSTEMS | OpenWeatherMap | 30s | LIVE |
-| AVIATION WX | AVWX SIGMETs | 30s | LIVE |
-| CONFLICT INTEL | GDELT 2.0 Geo API | 30s | LIVE |
-| DISASTERS | GDACS + ReliefWeb | 30s | LIVE |
-
-## Intelligence Features
+## Key Features
 
 ### Threat Assessment Engine
-- 12 geopolitical threat zones (Ukraine, Gaza, Red Sea, Hormuz, Taiwan, SCS, Korea, Sudan, Kashmir, Black Sea, E. Med, Horn of Africa)
-- Proximity-based scoring with zone-specific base weights
-- Multi-factor threat scoring (squawk codes, entity type, magnitude, FRP, proximity)
-- 5-level threat classification: CRITICAL / HIGH / MEDIUM / LOW / MINIMAL
+- Multi-factor scoring: squawk codes, entity type, seismic magnitude, wildfire FRP, proximity to 15 geopolitical zones
+- Threat levels: CRITICAL (75+), HIGH (50+), MEDIUM (28+), LOW (10+), MINIMAL (0+)
+- Real-time threat board with top 50 highest-scored entities
 
-### Military Callsign Intelligence
-17+ pattern database: RCH/REACH (USAF AMC), JAKE (USN Maritime Patrol), NATO (AEW&C), GHOST (Stealth Strike), VIPER (Air Superiority), BRONC (SIGINT), DUKE (Nuclear C2), BLADE (Carrier Strike), FORTE (HALE ISR), REAPER (UCAV), RAPTOR (5th Gen), ATLAS (RAF Transport), etc.
+### Geopolitical Zones (15)
+Ukraine/Russia Front, Gaza Strip, Iran Theater, Red Sea/Houthi Zone, Strait of Hormuz, Taiwan Strait, South China Sea, Korean Peninsula, Sudan Civil War, Kashmir LOC, Black Sea NATO Watch, Sahel Insurgency, Horn of Africa, Baltic NATO Frontier, Arctic GIUK Gap
 
-### Squawk Intelligence
-- 7500: HIJACK (CRITICAL)
-- 7600: COMMS FAILURE (HIGH)
-- 7700: EMERGENCY (CRITICAL)
-- 7777: MIL INTERCEPT (HIGH)
-- 7400: UAV LOST LINK (HIGH)
+### Military Intelligence
+- Squawk code detection: 7500 (Hijack), 7600 (Comms Failure), 7700 (Emergency), 7777 (MIL Intercept), 7400 (UAV Lost Link)
+- Military callsign database: 25+ prefix patterns (RCH, REACH, JAKE, NATO, GHOST, VIPER, BRONC, DUKE, etc.)
+- Aircraft type identification: C-17, B-2, F-22, P-8A, RC-135, E-4B, AC-130J, etc.
 
-### SGP4 Orbital Propagation
-- ISS full-orbit ground track (92-minute propagation)
-- Space debris tracking (Fengyun-1C, Cosmos 2251, Iridium 33 fragments)
-- Constellation tracking (Starlink, GPS, GLONASS, Space Stations)
+### Multi-Domain Fusion
+- Cross-domain correlation engine
+- Zone activity monitoring
+- Domain breakdown statistics
+- Cycle-based data refresh (30s intervals)
+
+### GDELT Article-Based Intelligence
+- Server-side geocoding of GDELT news articles using 61-entry geopolitical database
+- Categories: conflict, maritime, nuclear, cyber
+- Transforms article titles into geo-located intelligence events
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /` | GET | Main dashboard HTML |
+| `GET /api/health` | GET | System health status |
+| `GET /api/status` | GET | API key configuration status |
+| `POST /api/proxy` | POST | Proxy to upstream APIs (body: `{target, params}`) |
+| `POST /api/intel/gdelt` | POST | GDELT article geocoding (body: `{category}`) |
+| `GET /api/fusion/zones` | GET | Geopolitical zone definitions |
+
+## Environment Variables
+
+For production deployment, set these as Cloudflare secrets:
+
+```
+NASA_FIRMS_KEY    # NASA FIRMS wildfire data
+OWM_KEY           # OpenWeatherMap weather data
+N2YO_KEY          # N2YO satellite tracking
+GFW_TOKEN         # Global Fishing Watch maritime data
+AVWX_KEY          # AVWX aviation weather SIGMETs
+RAPIDAPI_KEY      # ADS-B Exchange military aircraft
+```
 
 ## Tech Stack
-
-- **Runtime**: Cloudflare Workers (Edge)
-- **Framework**: Hono v4
-- **Build**: Vite
-- **Map**: Leaflet.js + ESRI World Imagery + Carto Dark Labels
-- **Clustering**: leaflet.markercluster
-- **Orbital**: satellite.js (SGP4/SDP4)
-- **Fonts**: Orbitron + Share Tech Mono
+- **Backend**: Hono v4 (Cloudflare Pages edge runtime)
+- **Frontend**: Vanilla JS (zero-framework, pure DOM manipulation)
+- **Map**: Leaflet 1.9.4 + MarkerCluster
+- **Orbital**: satellite.js (SGP4 propagation)
+- **Fonts**: JetBrains Mono + Orbitron + Inter
+- **Build**: Vite + Wrangler
 - **Deployment**: Cloudflare Pages
 
-## Environment Variables (Cloudflare Secrets)
-
-```
-NASA_FIRMS_KEY    - NASA FIRMS fire detection API
-OWM_KEY           - OpenWeatherMap API key
-N2YO_KEY          - N2YO satellite tracking API
-GFW_TOKEN         - Global Fishing Watch bearer token
-AVWX_KEY          - AVWX aviation weather API
-RAPIDAPI_KEY      - RapidAPI key (ADS-B Exchange military)
-```
-
-## API Routes
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Main SENTINEL OS interface |
-| POST | `/api/proxy` | Secure edge proxy for keyed APIs |
-| GET | `/api/health` | Health check |
-| GET | `/api/status` | API key status |
-| GET | `/static/*` | Static assets |
-
-## Local Development
+## Development
 
 ```bash
-npm install
-npm run build
-npx wrangler pages dev dist --ip 0.0.0.0 --port 3000
+npm run build              # Build for production
+npm run dev:sandbox        # Dev server on port 3000
+pm2 start ecosystem.config.cjs  # Start with PM2
 ```
 
-## Deployment
-
-```bash
-npm run build
-npx wrangler pages deploy dist --project-name sentinel-os
-# Set secrets:
-npx wrangler pages secret put NASA_FIRMS_KEY --project-name sentinel-os
-npx wrangler pages secret put OWM_KEY --project-name sentinel-os
-# ... etc
-```
-
-## Roadmap
-
-- [ ] 3D WebGL globe mode (Three.js / CesiumJS)
-- [ ] MarineTraffic AIS integration
-- [ ] Real-time WebSocket data streaming
-- [ ] Mission planning / AOI zones
-- [ ] Watchlist correlation engine
-- [ ] Historical timeline / replay
-- [ ] Dark fleet anomaly detection ML
-- [ ] AIS spoofing detection
-- [ ] SIGINT / RF monitoring overlay
-- [ ] Cyber threat geolocation layer
-
-## Status
-
-- **Platform**: Cloudflare Pages Edge Runtime
-- **Version**: 2.0.0
-- **Status**: OPERATIONAL
+## Deployment Status
+- **Platform**: Cloudflare Pages (Edge Runtime)
+- **Status**: Active
+- **Version**: 3.0.0
 - **Last Updated**: 2026-03-23
