@@ -372,7 +372,7 @@ app.get('/api/fusion/zones', (c) => c.json({ zones: FUSION_ZONES }))
 ═══════════════════════════════════════════════════════════════ */
 app.get('/api/health', (c) => c.json({ 
   status: 'operational', 
-  version: '3.0.0', 
+  version: '3.5.0', 
   codename: 'SENTINEL OS',
   timestamp: new Date().toISOString(),
   uptime: 'edge-runtime',
@@ -402,7 +402,7 @@ app.get('/', (c) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<title>SENTINEL OS — Global Situational Awareness</title>
+<title>SENTINEL OS v3.5 — Global Situational Awareness</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛰</text></svg>">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
@@ -412,10 +412,14 @@ app.get('/', (c) => {
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"><\/script>
 <script src="https://unpkg.com/satellite.js@5.0.0/dist/satellite.min.js"><\/script>
+<script src="https://unpkg.com/globe.gl@2.35.1/dist/globe.gl.min.js"><\/script>
+<script src="https://unpkg.com/three@0.160.0/build/three.min.js"><\/script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <div id="map" style="position:absolute;inset:0;z-index:1"></div>
+<div id="globe" style="position:absolute;inset:0;z-index:1;display:none"></div>
+<div id="hud-overlay"></div>
 <div id="app"></div>
 <script src="/static/sentinel.js"><\/script>
 </body>

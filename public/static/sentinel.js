@@ -474,7 +474,8 @@ const TICKER = [
   '⚠ INTEL: Iran Theater — elevated activity — multiple strike reports',
   '⚠ INTEL: Ukraine Front — sustained kinetic operations — drone warfare escalation',
   '⚠ INTEL: Red Sea — Houthi maritime interdiction — shipping reroutes active',
-  'SENTINEL OS v3.0 — 16+ LIVE OSINT LAYERS — MULTI-DOMAIN FUSION — 450+ CATALOGUED SOURCES',
+  'SENTINEL OS v3.5 — 16+ LIVE OSINT LAYERS — 3D GLOBE — TIMELINE — SEARCH — KEYBOARD NAV',
+  '⌨ SHORTCUTS: / Search · G Globe · T Timeline · Z Zones · 1-4 Panels · ? Help',
 ];
 
 /* ═══════════════════════════════════════════════════════════════
@@ -519,11 +520,21 @@ function computeFusionStats(entities, threatBoard){
   let lastFetchTime = null, cycleCount = 0;
   let gdeltConflictEvents = [], gdeltCyberEvents = [], gdeltNuclearEvents = [];
 
+  // v3.5 state: globe, search, timeline, keyboard
+  let viewMode = '2d'; // '2d' | '3d'
+  let globe = null;
+  let searchQuery = '', searchResults = [], searchOpen = false;
+  let eventLog = []; // time-sequenced events
+  let showKeys = false;
+  let showTimeline = false;
+
   Object.keys(LAYERS).forEach(k => { layerState[k] = true; apiStatus[k] = 'loading'; });
   // Disable some layers by default
   ['ships','avwx','milsat'].forEach(k => { layerState[k] = false; });
 
   const mapEl = document.getElementById('map');
+  const globeEl = document.getElementById('globe');
+  const hudEl = document.getElementById('hud-overlay');
   const appEl = document.getElementById('app');
 
   /* ── INIT MAP ── */
@@ -637,19 +648,28 @@ function computeFusionStats(entities, threatBoard){
       apiStatus.iss='live'}catch(e){apiStatus.iss='error'}
   }
   async function fetchUSGS(){
-    try{const d=await(await fetch(D.USGS)).json();replaceLive('eq_','seismic',parseUSGS(d));apiStatus.seismic='live'}catch(e){apiStatus.seismic='error'}
+    try{const d=await(await fetch(D.USGS)).json();const parsed=parseUSGS(d);replaceLive('eq_','seismic',parsed);apiStatus.seismic='live';
+      parsed.filter(e=>parseFloat(e.details?.MAGNITUDE||'0')>=5).forEach(e=>logEvent('M'+e.details.MAGNITUDE+' quake: '+(e.details.PLACE||'Unknown'),'high',e));
+    }catch(e){apiStatus.seismic='error';logEvent('USGS seismic feed error','alert')}
   }
   async function fetchOpenSky(){
-    try{const d=await proxy('opensky');if(isErr(d)){apiStatus.aircraft='error';return}
+    try{const d=await proxy('opensky');if(isErr(d)){apiStatus.aircraft='error';logEvent('OpenSky ADS-B error','alert');return}
       const parsed=parseOpenSky(d);
+      const milAC=parsed.filter(e=>e.type==='military');
       replaceLive('ac_','aircraft',parsed.filter(e=>e.type==='aircraft'));
-      replaceLive('ac_','military',parsed.filter(e=>e.type==='military'));
-      apiStatus.aircraft='live';apiStatus.military='live'}catch(e){apiStatus.aircraft='error'}
+      replaceLive('ac_','military',milAC);
+      apiStatus.aircraft='live';apiStatus.military='live';
+      parsed.filter(e=>e.emergency).forEach(e=>logEvent('SQUAWK '+e.squawk+': '+e.name,'critical',e));
+      if(milAC.length>0&&cycleCount<=1)logEvent(milAC.length+' military aircraft detected','info');
+    }catch(e){apiStatus.aircraft='error'}
   }
   async function fetchFIRMS(){
     try{const txt=await proxy('firms');if(isErr(txt)){apiStatus.wildfires='error';return}
-      if(typeof txt==='string'&&txt.includes('latitude')){replaceLive('fire_','wildfires',parseFIRMS(txt));apiStatus.wildfires='live'}
-      else apiStatus.wildfires='error'}catch(e){apiStatus.wildfires='error'}
+      if(typeof txt==='string'&&txt.includes('latitude')){
+        const parsed=parseFIRMS(txt);replaceLive('fire_','wildfires',parsed);apiStatus.wildfires='live';
+        const major=parsed.filter(e=>parseFloat(e.details?.FRP||'0')>=200);
+        if(major.length>0)logEvent(major.length+' major wildfires (FRP>=200 MW)','high');
+      }else apiStatus.wildfires='error'}catch(e){apiStatus.wildfires='error'}
   }
   async function fetchOWM(){
     try{const d=await proxy('owm');if(isErr(d)){apiStatus.weather='error';return}
@@ -700,14 +720,16 @@ function computeFusionStats(entities, threatBoard){
       if(mR.status==='fulfilled'&&mR.value?.events){
         parseGDELTIntel(mR.value,'conflict').forEach(e=>conflictEnts.push({...e,id:'m_'+e.id}));
       }
-      if(conflictEnts.length){replaceLive('gdelt_','conflict',conflictEnts);apiStatus.conflict='live'}
-      else apiStatus.conflict='error';
+      if(conflictEnts.length){replaceLive('gdelt_','conflict',conflictEnts);apiStatus.conflict='live';
+        if(cycleCount<=1)logEvent(conflictEnts.length+' conflict events geocoded from GDELT','info');
+      }else apiStatus.conflict='error';
 
       if(nR.status==='fulfilled'&&nR.value?.events){
         gdeltNuclearEvents=nR.value.events;
         const nEnts=parseGDELTIntel(nR.value,'nuclear');
-        if(nEnts.length){replaceLive('gdelt_nuclear','nuclear',nEnts);apiStatus.nuclear='live'}
-        else apiStatus.nuclear='error';
+        if(nEnts.length){replaceLive('gdelt_nuclear','nuclear',nEnts);apiStatus.nuclear='live';
+          logEvent(nEnts.length+' nuclear/WMD intel events','critical');
+        }else apiStatus.nuclear='error';
       }
       if(cyR.status==='fulfilled'&&cyR.value?.events){
         gdeltCyberEvents=cyR.value.events;
@@ -715,7 +737,7 @@ function computeFusionStats(entities, threatBoard){
         if(cEnts.length){replaceLive('gdelt_cyber','cyber',cEnts);apiStatus.cyber='live'}
         else apiStatus.cyber='error';
       }
-    }catch(e){apiStatus.conflict='error'}
+    }catch(e){apiStatus.conflict='error';logEvent('GDELT intel fetch error','alert')}
   }
 
   async function fetchGDACS(){
@@ -723,8 +745,11 @@ function computeFusionStats(entities, threatBoard){
       const gR = await proxy('gdacs');
       if(!isErr(gR)){
         const ents=parseGDACS(gR);
-        if(ents.length){replaceLive('gdacs_','disasters',ents);apiStatus.disasters='live'}
-        else apiStatus.disasters='error';
+        if(ents.length){replaceLive('gdacs_','disasters',ents);apiStatus.disasters='live';
+          const red=ents.filter(e=>(e.details?.ALERT||'').toLowerCase()==='red');
+          red.forEach(e=>logEvent('RED ALERT: '+e.name,'critical',e));
+          if(cycleCount<=1)logEvent(ents.length+' active disasters from GDACS','info');
+        }else apiStatus.disasters='error';
       } else {apiStatus.disasters='error'}
     }catch(e){apiStatus.disasters='error'}
   }
@@ -779,8 +804,14 @@ function computeFusionStats(entities, threatBoard){
   async function fetchAll(){
     cycleCount++;
     lastFetchTime=new Date();
+    logEvent('Fetch cycle '+cycleCount+' initiated','info');
     await Promise.allSettled([fetchOpenSky(),fetchUSGS(),fetchISS(),fetchFIRMS(),fetchOWM(),fetchN2YO(),fetchGFW(),fetchAVWX(),fetchMilitary(),fetchGDELTIntel(),fetchGDACS()]);
-    refreshCounts();refreshThreat();renderUI();
+    refreshCounts();refreshThreat();
+    const total=Object.values(counts).reduce((a,b)=>a+b,0);
+    logEvent('Cycle '+cycleCount+' complete: '+total.toLocaleString()+' entities across '+Object.keys(counts).filter(k=>counts[k]>0).length+' domains','info');
+    // Auto-sync globe
+    if(viewMode==='3d'&&globe)updateGlobePoints();
+    renderUI();renderHUD();
   }
 
   /* ── LAYER/ZONE VISIBILITY ── */
@@ -795,7 +826,255 @@ function computeFusionStats(entities, threatBoard){
     [...zoneCircles,...zoneLabels].forEach(c=>{if(showZones){if(!map.hasLayer(c))c.addTo(map)}else{if(map.hasLayer(c))c.remove()}});
     renderUI();
   }
-  function flyTo(e){selected=e;renderUI();if(map&&e.lat!=null)map.flyTo([e.lat,e.lon],Math.max(map.getZoom(),6),{duration:1})}
+  function flyTo(e){
+    selected=e;renderUI();
+    if(viewMode==='2d'&&map&&e.lat!=null)map.flyTo([e.lat,e.lon],Math.max(map.getZoom(),6),{duration:1});
+    if(viewMode==='3d'&&globe&&e.lat!=null)globe.pointOfView({lat:e.lat,lng:e.lon,altitude:1.5},1000);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     3D GLOBE ENGINE — Globe.gl + Three.js WebGL renderer
+  ═══════════════════════════════════════════════════════════════ */
+  function initGlobe(){
+    if(globe || typeof Globe==='undefined')return;
+    try{
+      globe = Globe()(globeEl)
+        .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+        .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
+        .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
+        .showAtmosphere(true)
+        .atmosphereColor('#00aaff')
+        .atmosphereAltitude(0.2)
+        .pointOfView({lat:25,lng:30,altitude:2.5})
+        .width(window.innerWidth)
+        .height(window.innerHeight);
+
+      // Style the globe
+      const gm=globe.globeMaterial();
+      if(gm){gm.bumpScale=10;gm.emissive=new THREE.Color(0x001122);gm.emissiveIntensity=0.08}
+
+      // Rings for threat zones
+      globe.ringsData(THREAT_ZONES.map(z=>({lat:z.lat,lng:z.lon,maxR:z.r/200,propagationSpeed:1.5,
+        repeatPeriod:800,color:z.type==='conflict'?'rgba(255,34,0,0.3)':z.type==='chokepoint'?'rgba(255,136,0,0.3)':'rgba(255,204,0,0.3)'})))
+        .ringColor(d=>()=>d.color)
+        .ringMaxRadius('maxR')
+        .ringPropagationSpeed('propagationSpeed')
+        .ringRepeatPeriod('repeatPeriod');
+
+      window.addEventListener('resize',()=>{if(globe&&viewMode==='3d')globe.width(window.innerWidth).height(window.innerHeight)});
+    }catch(e){console.warn('Globe init failed:',e)}
+  }
+
+  function updateGlobePoints(){
+    if(!globe)return;
+    const visibleEnts=entities.filter(e=>e.lat!=null&&e.lon!=null&&layerState[e.type]);
+    const pts=visibleEnts.slice(0,800).map(e=>{
+      const col=LAYERS[e.type]?.color||'#ffffff';
+      const t=e._threat||{score:0};
+      return{lat:e.lat,lng:e.lon,size:e.type==='iss'?0.8:e.type==='military'?0.35:e.emergency?0.5:t.score>50?0.3:0.15,
+        color:e.emergency?'#ff0033':col,name:e.name,entity:e};
+    });
+    globe.pointsData(pts)
+      .pointAltitude(d=>d.entity.type==='iss'?0.3:d.entity.type==='satellites'||d.entity.type==='debris'?0.15:0.01)
+      .pointColor('color')
+      .pointRadius('size')
+      .pointLabel(d=>`<div style="background:rgba(4,14,24,0.95);color:${d.color};padding:4px 8px;border:1px solid ${d.color}44;border-radius:3px;font-family:monospace;font-size:10px">${d.name}</div>`)
+      .onPointClick(d=>{selected=d.entity;renderUI()});
+
+    // Arc lines for ISS track
+    if(issTLE){
+      const pts=propagateISSTrack(issTLE[0],issTLE[1],92);
+      if(pts.length>10){
+        const arcs=[];
+        for(let i=0;i<pts.length-1;i++){
+          if(Math.abs(pts[i+1][1]-pts[i][1])<180){
+            arcs.push({startLat:pts[i][0],startLng:pts[i][1],endLat:pts[i+1][0],endLng:pts[i+1][1],color:'#ff660066'});
+          }
+        }
+        globe.arcsData(arcs.slice(0,100))
+          .arcColor('color').arcAltitude(0).arcStroke(0.3).arcDashLength(0.4).arcDashGap(0.2);
+      }
+    }
+  }
+
+  function switchView(mode){
+    if(mode===viewMode)return;
+    viewMode=mode;
+    if(mode==='3d'){
+      mapEl.style.display='none';
+      globeEl.style.display='block';
+      if(!globe)initGlobe();
+      setTimeout(()=>updateGlobePoints(),500);
+    } else {
+      mapEl.style.display='block';
+      globeEl.style.display='none';
+      if(map)map.invalidateSize();
+    }
+    renderUI();renderHUD();
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     SEARCH ENGINE — Filter entities by name, type, threat level
+  ═══════════════════════════════════════════════════════════════ */
+  function doSearch(q){
+    searchQuery=q;
+    if(!q||q.length<2){searchResults=[];return}
+    const lower=q.toLowerCase();
+    searchResults=entities.filter(e=>{
+      if(e.name&&e.name.toLowerCase().includes(lower))return true;
+      if(e.type&&e.type.toLowerCase().includes(lower))return true;
+      if(e.details){
+        for(const v of Object.values(e.details)){
+          if(typeof v==='string'&&v.toLowerCase().includes(lower))return true;
+        }
+      }
+      return false;
+    }).slice(0,20).map(e=>({entity:e,threat:e._threat||scoreThreat(e)}));
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     EVENT TIMELINE — Time-sequenced intelligence event log
+  ═══════════════════════════════════════════════════════════════ */
+  function logEvent(msg,type,entity){
+    const ts=new Date();
+    eventLog.unshift({ts,msg,type:type||'info',entity:entity||null});
+    if(eventLog.length>100)eventLog.length=100;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     KEYBOARD SHORTCUTS
+  ═══════════════════════════════════════════════════════════════ */
+  function initKeyboard(){
+    document.addEventListener('keydown',ev=>{
+      // Ignore if typing in search
+      if(ev.target.tagName==='INPUT')return;
+      const k=ev.key.toLowerCase();
+      if(k==='1'){panel='layers';renderUI()}
+      else if(k==='2'){panel='threat';renderUI()}
+      else if(k==='3'){panel='fusion';renderUI()}
+      else if(k==='4'){panel='apis';renderUI()}
+      else if(k==='g'){switchView(viewMode==='2d'?'3d':'2d')}
+      else if(k==='z'){toggleZones()}
+      else if(k==='t'){showTimeline=!showTimeline;renderUI()}
+      else if(k==='escape'){
+        if(searchOpen){searchOpen=false;searchQuery='';searchResults=[];renderHUD()}
+        else if(selected){selected=null;renderUI()}
+        else if(showTimeline){showTimeline=false;renderUI()}
+        else if(showKeys){showKeys=false;renderHUD()}
+      }
+      else if(k==='/'||k==='f'){
+        ev.preventDefault();searchOpen=true;renderHUD();
+        setTimeout(()=>{const inp=document.getElementById('sentinel-search');if(inp)inp.focus()},50);
+      }
+      else if(k==='?'){showKeys=!showKeys;renderHUD()}
+      else if(k==='r'){fetchAll()}
+      else if(k==='h'){
+        // Home view - reset map
+        if(viewMode==='2d'&&map)map.flyTo([25,30],3,{duration:1});
+        if(viewMode==='3d'&&globe)globe.pointOfView({lat:25,lng:30,altitude:2.5},1000);
+      }
+    });
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     HUD OVERLAY RENDERER — Compass, search, stats ring, keys
+  ═══════════════════════════════════════════════════════════════ */
+  function renderHUD(){
+    let h='';
+    const total=Object.values(counts).reduce((a,b)=>a+b,0);
+    const critCount=threatBoard.filter(t=>t.level==='CRITICAL').length;
+    const highCount=threatBoard.filter(t=>t.level==='HIGH').length;
+    const now=new Date();
+    const utcClock=now.getUTCHours().toString().padStart(2,'0')+':'+now.getUTCMinutes().toString().padStart(2,'0')+':'+now.getUTCSeconds().toString().padStart(2,'0');
+
+    // View toggle (2D/3D)
+    h+=`<div class="view-toggle">`;
+    h+=`<button class="${viewMode==='2d'?'active':''}" onclick="window._switchView('2d')">2D MAP</button>`;
+    h+=`<button class="${viewMode==='3d'?'active':''}" onclick="window._switchView('3d')">3D GLOBE</button>`;
+    h+=`</div>`;
+
+    // Search bar
+    h+=`<div class="hud-search" style="${searchOpen?'':'opacity:0.6'}">`;
+    h+=`<span class="hud-search-icon">/</span>`;
+    h+=`<input id="sentinel-search" type="text" placeholder="SEARCH ENTITIES, LOCATIONS, ICAO..." value="${searchQuery}" oninput="window._doSearch(this.value)" onfocus="window._searchFocus()" onblur="setTimeout(()=>window._searchBlur(),200)">`;
+    if(searchOpen&&searchResults.length>0){
+      h+=`<div class="hud-search-results">`;
+      searchResults.forEach((r,i)=>{
+        const col=LAYERS[r.entity.type]?.color||'#fff';
+        const tCol=r.threat.col;
+        h+=`<div class="hud-search-item" onclick="window._searchSelect(${i})">`;
+        h+=`<div style="width:7px;height:7px;border-radius:50%;background:${col};flex-shrink:0"></div>`;
+        h+=`<div style="flex:1;min-width:0"><div style="color:var(--text-primary);font-size:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.entity.name}</div>`;
+        h+=`<div style="color:var(--text-dim);font-size:6px">${(LAYERS[r.entity.type]?.label||r.entity.type).toUpperCase()}</div></div>`;
+        if(r.threat.score>=10)h+=`<span style="color:${tCol};font-size:8px;font-weight:700">${r.threat.score}</span>`;
+        h+=`</div>`;
+      });
+      h+=`</div>`;
+    }
+    h+=`</div>`;
+
+    // Compass rose (SVG) with zoom level
+    const zoomLvl = map ? map.getZoom() : 3;
+    const mapCenter = map ? map.getCenter() : {lat:25,lng:30};
+    h+=`<div class="hud-compass" title="Zoom: ${Math.round(zoomLvl)} | Center: ${mapCenter.lat?.toFixed(1)}, ${mapCenter.lng?.toFixed(1)}">`;
+    h+=`<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">`;
+    h+=`<circle cx="32" cy="32" r="30" fill="none" stroke="rgba(0,212,255,0.15)" stroke-width="0.5"/>`;
+    h+=`<circle cx="32" cy="32" r="20" fill="none" stroke="rgba(0,212,255,0.08)" stroke-width="0.3" stroke-dasharray="2 3"/>`;
+    h+=`<line x1="32" y1="4" x2="32" y2="14" stroke="#ff3355" stroke-width="1.5"/>`;
+    h+=`<line x1="32" y1="50" x2="32" y2="60" stroke="rgba(0,212,255,0.3)" stroke-width="0.8"/>`;
+    h+=`<line x1="4" y1="32" x2="14" y2="32" stroke="rgba(0,212,255,0.3)" stroke-width="0.8"/>`;
+    h+=`<line x1="50" y1="32" x2="60" y2="32" stroke="rgba(0,212,255,0.3)" stroke-width="0.8"/>`;
+    h+=`<text x="32" y="12" text-anchor="middle" fill="#ff3355" font-size="6" font-family="'Orbitron',sans-serif" font-weight="700">N</text>`;
+    h+=`<text x="32" y="60" text-anchor="middle" fill="rgba(0,212,255,0.4)" font-size="5" font-family="'JetBrains Mono',monospace">S</text>`;
+    h+=`<text x="8" y="34" text-anchor="middle" fill="rgba(0,212,255,0.4)" font-size="5" font-family="'JetBrains Mono',monospace">W</text>`;
+    h+=`<text x="56" y="34" text-anchor="middle" fill="rgba(0,212,255,0.4)" font-size="5" font-family="'JetBrains Mono',monospace">E</text>`;
+    h+=`<circle cx="32" cy="32" r="2" fill="rgba(0,212,255,0.5)"/>`;
+    h+=`<text x="32" y="36" text-anchor="middle" fill="rgba(0,212,255,0.25)" font-size="4" font-family="'JetBrains Mono',monospace">Z${Math.round(zoomLvl)}</text>`;
+    h+=`</svg></div>`;
+
+    // UTC clock widget
+    h+=`<div class="hud-clock">`;
+    h+=`<span style="color:var(--accent-cyan);font-family:var(--font-display);font-size:11px;font-weight:600;letter-spacing:2px">${utcClock}</span>`;
+    h+=`<span style="color:var(--text-tertiary);font-size:5.5px;letter-spacing:2px">UTC ZULU</span>`;
+    h+=`</div>`;
+
+    // Stats ring (bottom center)
+    h+=`<div class="hud-stats-ring">`;
+    const statItems=[
+      ['AVN',counts.aircraft||0,'#00ccff'],
+      ['MIL',counts.military||0,'#ff3355'],
+      ['MAR',(counts.fishing||0)+(counts.darkships||0),'#00ff88'],
+      ['ORB',(counts.satellites||0)+(counts.debris||0),'#ffcc00'],
+      ['SIS',(counts.seismic||0),'#ffee00'],
+      ['FIR',counts.wildfires||0,'#ff5500'],
+      ['INT',counts.conflict||0,'#ff2200'],
+      ['DIS',counts.disasters||0,'#ff8c00'],
+    ];
+    statItems.forEach(([label,cnt,col])=>{
+      h+=`<div class="stat"><span style="color:${col}88;font-size:5.5px;letter-spacing:0.5px">${label}</span><span style="color:${col};font-weight:600">${cnt}</span></div>`;
+    });
+    h+=`<div class="stat" style="border-left:1px solid var(--border-dim);padding-left:6px"><span style="color:var(--accent-green);font-size:8px;font-weight:700">${total.toLocaleString()}</span><span style="color:var(--text-dim);font-size:5px">TOTAL</span></div>`;
+    if(critCount>0)h+=`<div class="stat crit-flash"><span style="color:#ff0033;font-weight:700">CRIT:${critCount}</span></div>`;
+    h+=`</div>`;
+
+    // Keyboard shortcuts overlay
+    if(showKeys){
+      h+=`<div class="hud-keys">`;
+      h+=`<div style="color:var(--accent-cyan);font-size:7px;letter-spacing:2px;margin-bottom:6px;text-align:center">KEYBOARD SHORTCUTS</div>`;
+      const keys=[
+        ['1-4','Switch panels'],['G','Toggle 2D/3D globe'],['Z','Toggle threat zones'],
+        ['T','Toggle timeline'],['/ or F','Search entities'],['R','Refresh all feeds'],
+        ['H','Home view (reset map)'],['Esc','Close panel/search'],
+        ['?','Show/hide shortcuts'],
+      ];
+      keys.forEach(([k,desc])=>{
+        h+=`<div class="key-row"><kbd>${k}</kbd><span style="color:var(--text-secondary);font-size:6.5px">${desc}</span></div>`;
+      });
+      h+=`</div>`;
+    }
+
+    hudEl.innerHTML=h;
+  }
 
   /* ═══════════════════════════════════════════════════════════════
      UI RENDERER — Palantir/Beholder-class dark ops interface
@@ -964,6 +1243,30 @@ function computeFusionStats(entities, threatBoard){
     }
     h += '</div>'; // end left panel
 
+    // ── TIMELINE PANEL ──
+    if(showTimeline&&!selected){
+      h += '<div class="hud-timeline">';
+      h += '<div style="padding:12px 16px 8px;border-bottom:1px solid var(--border-dim);display:flex;justify-content:space-between;align-items:center">';
+      h += '<span style="color:var(--accent-cyan);font-size:8px;letter-spacing:2px;font-weight:600">EVENT TIMELINE</span>';
+      h += '<span class="cb" onclick="window._toggleTimeline()" style="color:var(--text-tertiary);font-size:14px;cursor:pointer">✕</span>';
+      h += '</div>';
+      h += '<div style="overflow-y:auto;flex:1">';
+      if(eventLog.length===0){
+        h += '<div style="padding:20px 16px;text-align:center;color:var(--text-dim);font-size:7px;letter-spacing:1px">AWAITING INTELLIGENCE EVENTS</div>';
+      }
+      eventLog.slice(0,60).forEach(ev=>{
+        const tCol=ev.type==='critical'?'#ff0033':ev.type==='high'?'#ff7700':ev.type==='alert'?'#ffcc00':'var(--text-tertiary)';
+        const time=ev.ts.getUTCHours().toString().padStart(2,'0')+':'+ev.ts.getUTCMinutes().toString().padStart(2,'0')+':'+ev.ts.getUTCSeconds().toString().padStart(2,'0');
+        h+=`<div style="padding:5px 16px;border-bottom:1px solid #030b14;cursor:${ev.entity?'pointer':'default'}" ${ev.entity?`onclick="window._timelineSelect('${ev.entity?.id||''}')"`:''}>`;
+        h+=`<div style="display:flex;gap:6px;align-items:center">`;
+        h+=`<span style="color:var(--text-dim);font-size:6.5px;flex-shrink:0;font-family:var(--font-mono)">${time}</span>`;
+        h+=`<div style="width:4px;height:4px;border-radius:50%;background:${tCol};flex-shrink:0"></div>`;
+        h+=`<span style="color:${tCol};font-size:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ev.msg}</span>`;
+        h+=`</div></div>`;
+      });
+      h += '</div></div>';
+    }
+
     // ── RIGHT PANEL (Entity Inspector) ──
     if(selected){
       const threat=selected._threat||scoreThreat(selected);
@@ -1042,15 +1345,28 @@ function computeFusionStats(entities, threatBoard){
   window._setPanel = p => { panel=p; renderUI(); };
   window._flyTo = idx => { if(threatBoard[idx]) flyTo(threatBoard[idx].entity); };
   window._closeInspector = () => { selected=null; renderUI(); };
+  window._switchView = switchView;
+  window._doSearch = q => { doSearch(q); renderHUD(); };
+  window._searchFocus = () => { searchOpen=true; renderHUD(); };
+  window._searchBlur = () => { searchOpen=false; renderHUD(); };
+  window._searchSelect = idx => { if(searchResults[idx]){flyTo(searchResults[idx].entity);searchOpen=false;searchQuery='';searchResults=[];renderHUD()} };
+  window._toggleTimeline = () => { showTimeline=!showTimeline; renderUI(); };
+  window._toggleKeys = () => { showKeys=!showKeys; renderHUD(); };
+  window._timelineSelect = id => { const e=entities.find(x=>x.id===id); if(e)flyTo(e); };
 
   /* ── BOOT SEQUENCE ── */
   function boot(){
-    console.log('%c SENTINEL OS v3.0 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px');
+    console.log('%c SENTINEL OS v3.5 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px');
     console.log('%c Global Situational Awareness Platform ', 'color:#00d4ff;font-size:10px');
-    console.log('%c 16+ Live OSINT Layers · Multi-Domain Fusion · Edge Runtime ', 'color:#1a3a50;font-size:9px');
+    console.log('%c 16+ Live OSINT Layers + 3D Globe + Timeline + Search + Keyboard Nav ', 'color:#1a3a50;font-size:9px');
 
     initMap();
+    initKeyboard();
     renderUI();
+    renderHUD();
+
+    logEvent('SENTINEL OS v3.5 initialized','info');
+    logEvent('Systems online: 2D Map, 3D Globe, Search, Timeline, Keyboard shortcuts','info');
 
     // Staggered data loading to avoid rate limits
     fetchAll();
@@ -1063,7 +1379,9 @@ function computeFusionStats(entities, threatBoard){
     setInterval(fetchCelesTrak, 180000);  // TLE propagation: 3min
     setInterval(fetchISSTrack, 3600000);  // ISS TLE refresh: 1hr
     setInterval(updateISSTrack, 60000);   // ISS track update: 1min
-    setInterval(() => { tickIdx = (tickIdx+1) % TICKER.length; renderUI(); }, 5000);
+    setInterval(() => { tickIdx = (tickIdx+1) % TICKER.length; renderUI(); }, 5500);
+    // HUD clock/compass refresh
+    setInterval(renderHUD, 2000);
   }
 
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

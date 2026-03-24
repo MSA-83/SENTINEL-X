@@ -1,4 +1,4 @@
-# SENTINEL OS v3.0 — Global Situational Awareness Platform
+# SENTINEL OS v3.5 — Global Situational Awareness Platform
 
 ## Overview
 SENTINEL OS is a production-grade, multi-domain global situational awareness platform inspired by Beholder.me, Palantir Gotham, and NATO Common Operating Picture (COP) systems. It aggregates 16+ live OSINT data layers from 450+ catalogued intelligence sources into a unified military-grade dark ops interface.
@@ -6,6 +6,57 @@ SENTINEL OS is a production-grade, multi-domain global situational awareness pla
 **Architecture**: Edge BFF (Backend-for-Frontend) on Cloudflare Workers/Pages + Hono  
 **Runtime**: Zero-dependency edge runtime — no servers, no databases, pure edge compute  
 **Design Language**: Palantir Gotham / NATO COP / Beholder.me dark ops aesthetic
+
+## v3.5 New Features
+
+### 3D WebGL Globe View
+- Toggle between 2D Leaflet map and 3D Globe.gl visualization (`G` key)
+- Blue Marble satellite imagery with bump mapping and atmospheric halo
+- Entity points rendered at correct altitude (orbital entities elevated)
+- Animated threat zone rings pulsing over geopolitical hotspots
+- ISS orbit arc visualization in 3D space
+- Click-to-inspect entities on the globe
+- Auto-syncs with live data on every fetch cycle
+
+### Real-Time Event Timeline
+- Time-sequenced intelligence event log (`T` key to toggle)
+- Automatically populates from all data feeds:
+  - Emergency squawk codes (CRITICAL)
+  - Nuclear/WMD intel events (CRITICAL)
+  - RED alert disasters (CRITICAL)
+  - M5.0+ earthquakes (HIGH)
+  - Major wildfires FRP>=200 MW (HIGH)
+  - Fetch cycle status updates (INFO)
+- Click events to fly to entity location
+- Rolling 100-event buffer with UTC timestamps
+
+### Entity Search Engine
+- Full-text search across all tracked entities (`/` or `F` key)
+- Searches entity names, types, and detail fields (ICAO codes, callsigns, locations)
+- Live results dropdown with threat score indicators
+- Click to fly to and inspect entity
+
+### Keyboard Shortcuts
+| Key | Action |
+|-----|--------|
+| `1-4` | Switch left panel tabs |
+| `G` | Toggle 2D Map / 3D Globe |
+| `Z` | Toggle threat zone overlays |
+| `T` | Toggle event timeline |
+| `/` or `F` | Open entity search |
+| `R` | Refresh all feeds immediately |
+| `H` | Home view (reset map center) |
+| `Esc` | Close active panel/search |
+| `?` | Show/hide keyboard shortcuts |
+
+### Enhanced HUD Overlays
+- **Compass rose** with zoom level display (bottom-right)
+- **UTC Zulu clock** (bottom-left) — live real-time display
+- **Stats ring** (bottom-center) — domain breakdown with labeled counts:
+  - AVN (aviation), MIL (military), MAR (maritime), ORB (orbital), SIS (seismic), FIR (wildfire), INT (conflict intel), DIS (disasters)
+  - Critical threat flash indicator
+- **View toggle** buttons (top-right) for 2D/3D switching
+- Auto-refresh every 2 seconds
 
 ## Live Data Layers (16+)
 
@@ -21,7 +72,6 @@ SENTINEL OS is a production-grade, multi-domain global situational awareness pla
 |-------|--------|-------------|--------------|
 | Fishing Activity | Global Fishing Watch | 30s | Yes (GFW_TOKEN) |
 | Dark Fleet (AIS Gaps) | Global Fishing Watch | 30s | Yes (GFW_TOKEN) |
-| Maritime AIS | MarineTraffic | N/A | Missing |
 
 ### Orbital/Space Domain
 | Layer | Source | Update Rate | Key Required |
@@ -53,10 +103,10 @@ Browser ──→ Cloudflare Edge Worker (Hono BFF)
                ├── /api/proxy ──→ OpenSky, GDACS, FIRMS, N2YO, GFW, ADS-B Exchange...
                ├── /api/intel/gdelt ──→ GDELT 2.0 Article API → Server-side geocoding
                ├── /api/fusion/zones ──→ Geopolitical zone definitions
-               ├── /api/health ──→ System health
+               ├── /api/health ──→ System health (v3.5.0)
                ├── /api/status ──→ API key status
                ├── /static/* ──→ CSS + JS (CDN-optimized)
-               └── / ──→ Main HTML (inline)
+               └── / ──→ Main HTML (inline, loads Globe.gl + Three.js + Leaflet + satellite.js)
 ```
 
 ## Key Features
@@ -112,7 +162,8 @@ RAPIDAPI_KEY      # ADS-B Exchange military aircraft
 ## Tech Stack
 - **Backend**: Hono v4 (Cloudflare Pages edge runtime)
 - **Frontend**: Vanilla JS (zero-framework, pure DOM manipulation)
-- **Map**: Leaflet 1.9.4 + MarkerCluster
+- **2D Map**: Leaflet 1.9.4 + MarkerCluster
+- **3D Globe**: Globe.gl + Three.js (WebGL)
 - **Orbital**: satellite.js (SGP4 propagation)
 - **Fonts**: JetBrains Mono + Orbitron + Inter
 - **Build**: Vite + Wrangler
@@ -129,5 +180,25 @@ pm2 start ecosystem.config.cjs  # Start with PM2
 ## Deployment Status
 - **Platform**: Cloudflare Pages (Edge Runtime)
 - **Status**: Active
-- **Version**: 3.0.0
-- **Last Updated**: 2026-03-23
+- **Version**: 3.5.0
+- **Last Updated**: 2026-03-24
+
+## User Guide
+1. Open the platform URL in a modern browser
+2. The 2D satellite map loads automatically with all active data layers
+3. Press `G` to switch to 3D globe view
+4. Use left panel tabs (LAYERS / THREAT / FUSION / APIS) to inspect data
+5. Press `/` to search for any entity by name, callsign, or ICAO code
+6. Press `T` to open the real-time event timeline
+7. Click any marker to open the entity inspector (right panel)
+8. Toggle threat zone overlays with `Z`
+9. Press `?` for full keyboard shortcut reference
+
+## Next Steps
+- AISStream.io real-time maritime AIS streaming
+- ACLED conflict event API integration
+- Server-Sent Events (SSE) for sub-second push updates
+- CesiumJS integration for terrain-accurate 3D
+- JWT multi-tenant authentication
+- Cloudflare D1 for persistent storage and event archiving
+- PDF/CSV export and reporting
