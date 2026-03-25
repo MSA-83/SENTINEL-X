@@ -15,26 +15,26 @@ Real-time global situational awareness platform aggregating 16+ live OSINT data 
 
 | Layer | Source | Status | Update Rate |
 |-------|--------|--------|-------------|
-| Aircraft (ADS-B) | OpenSky Network | LIVE (11,228 states) | 45s |
-| Military Air | OpenSky MIL-DB detection | LIVE | 45s |
-| Military Air (Enhanced) | ADS-B Exchange (RapidAPI) | Needs subscription | 45s |
+| Aircraft (ADS-B) | OpenSky Network | LIVE (11,218 states) | 60s |
+| Military Air | OpenSky MIL-DB detection | LIVE | 60s |
+| Military Air (Enhanced) | ADS-B Exchange (RapidAPI) | Needs subscription | 60s |
 | Maritime AIS | AISStream.io WebSocket | Config Ready (key set) | Real-time |
-| Dark Fleet | Global Fishing Watch (Gap Events) | LIVE (50 entries) | 45s |
-| Fishing Activity | Global Fishing Watch | LIVE (50 entries) | 45s |
+| Dark Fleet | Global Fishing Watch (Gap Events) | LIVE (50 entries) | 60s |
+| Fishing Activity | Global Fishing Watch | LIVE (50 entries) | 60s |
 | ISS Position | wheretheiss.at + SGP4 Propagation | LIVE | 5s |
-| Satellites | N2YO + CelesTrak TLE | LIVE (1,893+) | 3min |
+| Satellites | N2YO + CelesTrak TLE | LIVE (1,922+) | 3min |
 | Space Debris | CelesTrak SGP4 (Fengyun, Cosmos, Iridium) | LIVE | 3min |
 | Military Satellites | CelesTrak Military Group | LIVE | 3min |
-| Seismic Events | USGS Earthquake API | LIVE | 45s |
-| Wildfires | NASA FIRMS VIIRS | LIVE (37,012 hotspots) | 45s |
-| Storm Systems | OpenWeatherMap (20 cities) | LIVE | 45s |
-| Aviation WX | AVWX METAR (15 airports) | LIVE (14 stations) | 45s |
-| Conflict Intel | GDELT 2.0 Articles + NewsAPI | LIVE (72+ geocoded) | 45s (staggered) |
-| Disasters | GDACS (100 features) | LIVE | 45s |
-| Disasters (Supplemental) | ReliefWeb | Needs appname registration | 45s |
-| Cyber Threats | GDELT Cyber Intel | LIVE | 45s |
-| Cyber Exposure | Shodan (OSS plan - limited) | Limited | 45s |
-| Nuclear Intel | GDELT Nuclear Monitoring | LIVE | 45s |
+| Seismic Events | USGS Earthquake API | LIVE | 60s |
+| Wildfires | NASA FIRMS VIIRS | LIVE (37,028 hotspots) | 60s |
+| Storm Systems | OpenWeatherMap (20 cities) | LIVE | 60s |
+| Aviation WX | AVWX METAR (15 airports) | LIVE (14 stations) | 60s |
+| Conflict Intel | GDELT 2.0 Articles + NewsAPI | LIVE (varies) | 60s (staggered) |
+| Disasters | GDACS (100 features) | LIVE | 60s |
+| Disasters (Supplemental) | ReliefWeb | Needs appname registration | 60s |
+| Cyber Threats | GDELT Cyber Intel | LIVE | 60s |
+| Cyber Exposure | Shodan (OSS plan - limited) | Limited | 60s |
+| Nuclear Intel | GDELT Nuclear Monitoring | LIVE | 60s |
 
 ### Key Features
 
@@ -46,7 +46,8 @@ Real-time global situational awareness platform aggregating 16+ live OSINT data 
 - **Military Intelligence** — Squawk code decoder, callsign database (MIL_DB), NATO role classification
 - **SGP4 Orbital Propagation** — Real-time satellite position calculation from TLE data
 - **Multi-Domain Fusion** — Cross-correlates entities across all domains with zone proximity scoring
-- **Fetch Cycle Guard** — Prevents overlapping fetch cycles that caused service unresponsiveness
+- **Fetch Cycle Guard** — Prevents overlapping fetch cycles with minimum 2s cooldown
+- **Phased Data Loading** — Core feeds render immediately, GDELT/supplemental feeds async
 
 ### Threat Zones (15)
 
@@ -104,37 +105,78 @@ Edge BFF (Backend-for-Frontend) Pattern:
 - All keyed API calls route through /api/proxy to protect credentials
 - GDELT article-based conflict intel with server-side geocoding
 - Multi-city weather aggregation (OWM) and multi-airport METAR (AVWX)
-- Staggered GDELT requests (3s apart) to avoid rate-limiting
-- Retry logic with exponential backoff for unreliable APIs
-- Fetch cycle guard prevents overlapping request cascades
+- Parallel GDELT requests with 8s timeout (conflict+maritime parallel, then nuclear+cyber parallel)
+- Robust error handling: content-type validation, JSON parse guards, graceful fallbacks
+- Fetch cycle guard with 2s cooldown prevents overlapping request cascades
 ```
 
 ## Data Flow
 
 1. Frontend boots, initializes Leaflet map + HUD
-2. `fetchAll()` runs every 45s with overlap guard, calling 11+ parallel data sources
+2. `fetchAll()` runs every 60s with overlap guard, calling 11+ parallel data sources
 3. Phase 1: Fast feeds (OpenSky, USGS, ISS, FIRMS, OWM, N2YO, AVWX, Military) — renders immediately
 4. Phase 2: Slower feeds (GFW, GDACS, ReliefWeb) — renders after completion
-5. Phase 3: GDELT (staggered 3s apart: conflict -> maritime -> nuclear -> cyber)
-6. Phase 4: Supplemental (NewsAPI at +5s, Shodan at +8s)
+5. Phase 3: GDELT (parallel pairs: conflict+maritime together, then nuclear+cyber together after 2s gap)
+6. Phase 4: Supplemental (NewsAPI at +3s, Shodan at +5s) — fire-and-forget
 7. Each parser normalizes data to unified entity format
 8. Threat engine scores each entity (0-100) based on type, squawk, zone proximity
 9. UI renders entities on map, updates threat board, fusion stats, timeline
 
-## v4.0.1 Fixes (2026-03-25)
+## Changelog
 
-### Critical Bug Fixes
+### v4.0.2 (2026-03-25)
+
+#### Performance Fixes
+- **GDELT timeout reduced** — Backend retry reduced from 2 retries with 6s backoff to 0 retries with 8s hard timeout. Previous behavior caused 27s+ blocking on rate-limited/unreachable GDELT
+- **GDELT parallel fetch** — Frontend now fetches conflict+maritime in parallel (Phase A), then nuclear+cyber in parallel (Phase B) instead of sequential 4× stagger. Cuts total GDELT time from ~24s to ~10s
+- **Fetch cycle cooldown** — Added 2s minimum cooldown after fetchInProgress=false to prevent rapid re-entry from setInterval overlap
+- **Polling interval** — Increased from 45s to 60s to prevent request pile-up when slow APIs (GDELT, GFW) are rate-limited
+
+#### Error Handling Fixes
+- **Shodan JSON parse crash** — `/api/shodan/search` returned HTML (not JSON) from paid-only search endpoint, causing SyntaxError. Added content-type validation and try/catch around JSON.parse for all Shodan API calls
+- **Shodan DNS resolve fallback** — Added content-type guards to prevent crash when Shodan API returns HTML for any endpoint
+- **Frontend Shodan resilience** — Added try/catch around response.json() in fetchShodan to handle malformed responses
+
+#### Data Integrity Fixes
+- **CelesTrak satellite prefix collision** — Multiple `replaceLive()` calls with different prefixes (`sta_`, `sl_`, `gps_`, `glo_`) could cause partial data loss. Unified to single `ctk_` prefix with batch replacement
+- **GDELT fire-and-forget** — Phase 3/4 (GDELT, NewsAPI, Shodan) are now true fire-and-forget with `.catch(()=>{})` to prevent unhandled promise rejections
+
+### v4.0.1 (2026-03-25)
+
+#### Critical Bug Fixes
 - **GDELT prefix collision** — `replaceLive('gdelt_',...)` was wiping nuclear/cyber data on each conflict refresh. Fixed with specific prefixes: `gdelt_conflict`, `gdelt_nuclear_`, `gdelt_cyber_`, `gdelt_maritime_`
 - **Fetch cycle cascading** — 30s interval + slow GDELT (14-24s) caused overlapping cycles that froze the service (588s+ response times). Fixed with `fetchInProgress` guard and increased interval to 45s
 - **Shodan exploits API** — Free Shodan exploits endpoint returns HTML not JSON. Replaced with host-lookup fallback strategy using DNS resolve + individual host queries
 - **Military ADS-B Exchange 403** — RapidAPI subscription expired. Added graceful handling: logs once on first cycle, falls back silently to OpenSky MIL-DB detection
 - **ReliefWeb appname** — All appname strategies rejected (requires registration). Added POST method attempt + clear error messaging. GDACS (100 features) serves as primary disaster feed
 
-### Improvements
+#### Improvements
 - **Phased data loading** — Phase 1 (fast APIs) renders immediately, Phase 2 (slower APIs) renders after completion, Phase 3/4 async
 - **API status accuracy** — Updated API reference table to reflect actual service status (ADS-B Exchange: limited, Shodan: limited, ReliefWeb: pending)
 - **NewsAPI prefix** — Changed from generic `news_` to `news_conflict_` to avoid entity ID conflicts
 - **Cleaner event logging** — Reduced log spam for known limitations (Shodan free plan, ADS-B subscription)
+
+## Verified API Test Results (2026-03-25)
+
+| # | Endpoint | Result |
+|---|----------|--------|
+| 1 | Health | operational, v4.0.0 |
+| 2 | OpenSky | 11,218 aircraft states |
+| 3 | FIRMS | 37,028 CSV lines |
+| 4 | N2YO | 1,922 satellites |
+| 5 | OWM Global | 20 cities |
+| 6 | AVWX Global | 14 stations |
+| 7 | GDACS | 100 disaster features |
+| 8 | GFW Fishing | 50 entries |
+| 9 | GFW Gap | 50 entries |
+| 10 | NewsAPI | 4 geocoded of 5 total |
+| 11 | Shodan | Free plan (oss), clean error |
+| 12 | ReliefWeb | Needs appname registration |
+| 13 | ACLED | Needs API key registration |
+| 14 | AIS Config | Key present |
+| 15 | Fusion Zones | 12 zones |
+| 16 | Military (ADS-B Ex) | 403 (subscription required) |
+| 17 | GDELT | Timeout from sandbox (works from CF edge) |
 
 ## Registration Guidance
 
@@ -149,5 +191,5 @@ Edge BFF (Backend-for-Frontend) Pattern:
 
 - **Platform**: Cloudflare Pages
 - **Status**: Active (sandbox)
-- **Version**: 4.0.1
+- **Version**: 4.0.2
 - **Last Updated**: 2026-03-25
