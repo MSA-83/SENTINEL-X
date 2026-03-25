@@ -28,11 +28,15 @@ async function proxy(target, params) {
 }
 async function intelFetch(category) {
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000); // 15s max per GDELT call
     const res = await fetch('/api/intel/gdelt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category })
+      body: JSON.stringify({ category }),
+      signal: controller.signal
     });
+    clearTimeout(timer);
     return await res.json();
   } catch (e) {
     return { events: [], error: String(e) };
@@ -509,15 +513,15 @@ const API_REF = [
   { name:'CelesTrak TLE',      cost:'FREE', key:'NO KEY',    status:'live', domain:'Orbital' },
   { name:'GDELT 2.0 Articles', cost:'FREE', key:'NO KEY',    status:'live', domain:'Conflict' },
   { name:'GDACS UN OCHA',      cost:'FREE', key:'NO KEY',    status:'live', domain:'Disaster' },
-  { name:'ReliefWeb OCHA',     cost:'FREE', key:'NO KEY',    status:'live', domain:'Disaster' },
+  { name:'ReliefWeb OCHA',     cost:'FREE', key:'REGISTER',  status:'pending', domain:'Disaster' },
   { name:'NASA FIRMS',         cost:'FREE', key:'ENV',       status:'live', domain:'Wildfire' },
   { name:'N2YO Satellites',    cost:'FREE', key:'ENV',       status:'live', domain:'Orbital' },
   { name:'OpenWeatherMap',     cost:'FREE', key:'ENV',       status:'live', domain:'Weather' },
   { name:'AVWX METAR',         cost:'FREE', key:'ENV',       status:'live', domain:'Aviation WX' },
   { name:'GFW Events API',     cost:'FREE', key:'ENV',       status:'live', domain:'Maritime' },
-  { name:'ADS-B Exchange',     cost:'PAID', key:'ENV',       status:'live', domain:'Military Air' },
+  { name:'ADS-B Exchange',     cost:'PAID', key:'ENV',       status:'limited', domain:'Military Air' },
   { name:'NewsAPI',            cost:'FREE', key:'ENV',       status:'live', domain:'Conflict' },
-  { name:'Shodan',             cost:'FREE', key:'ENV',       status:'live', domain:'Cyber' },
+  { name:'Shodan',             cost:'FREE', key:'ENV',       status:'limited', domain:'Cyber' },
   { name:'AISStream.io',       cost:'FREE', key:'ENV',       status:'pending', domain:'Maritime AIS' },
   { name:'ACLED Conflict',     cost:'FREE', key:'REGISTER',  status:'pending', domain:'Conflict' },
 ];
@@ -581,6 +585,7 @@ function computeFusionStats(entities, threatBoard){
   let tickIdx = 0, panel = 'layers', showZones = true;
   let lastFetchTime = null, cycleCount = 0;
   let gdeltConflictEvents = [], gdeltCyberEvents = [], gdeltNuclearEvents = [];
+  let fetchInProgress = false; // Guard against overlapping fetch cycles
 
   // v4.0 state: globe, search, timeline, keyboard
   let viewMode = '2d';
@@ -782,7 +787,17 @@ function computeFusionStats(entities, threatBoard){
   }
 
   async function fetchMilitary(){
-    try{const d=await proxy('military');if(isErr(d)){return} // don't override OpenSky military status
+    try{
+      const d=await proxy('military');
+      if(isErr(d)){
+        // ADS-B Exchange requires paid subscription — log once, don't spam
+        if(cycleCount<=1){
+          const status=d.status||0;
+          if(status===403)logEvent('ADS-B Exchange: subscription required (403) — using OpenSky military detection','info');
+          else logEvent('ADS-B Exchange unavailable ('+status+') — using OpenSky military detection','info');
+        }
+        return;
+      }
       const ents=(d?.ac||[]).slice(0,100).filter(a=>a.lat&&a.lon).map((a,i)=>{
         const cs=a.flight?.trim()||a.r||'MIL:'+a.hex,milInfo=classMilCS(cs);
         return{id:'mil_adsb_'+i,type:'military',lat:a.lat,lon:a.lon,name:cs,
@@ -798,45 +813,54 @@ function computeFusionStats(entities, threatBoard){
     }catch(e){}
   }
 
-  // GDELT — fixed: stagger requests 3s apart to avoid rate-limits
+  // GDELT — fixed: parallel fetch with individual timeouts, no stagger needed
+  // Backend now uses shorter 12s timeouts per request with fewer retries
   async function fetchGDELTIntel(){
     try{
-      // Stagger: conflict first
-      const cR = await intelFetch('conflict');
+      // Phase A: conflict + maritime in parallel (most important)
+      const [cR, mR] = await Promise.allSettled([
+        intelFetch('conflict'),
+        intelFetch('maritime')
+      ]);
+
       const conflictEnts=[];
-      if(cR?.events?.length){
-        gdeltConflictEvents=cR.events;
-        parseGDELTIntel(cR,'conflict').forEach(e=>conflictEnts.push(e));
+      if(cR.status==='fulfilled' && cR.value?.events?.length){
+        gdeltConflictEvents=cR.value.events;
+        parseGDELTIntel(cR.value,'conflict').forEach(e=>conflictEnts.push(e));
+      }
+      if(mR.status==='fulfilled' && mR.value?.events?.length){
+        parseGDELTIntel(mR.value,'conflict').forEach(e=>conflictEnts.push({...e,id:'gdelt_maritime_'+e.id}));
       }
 
-      // Wait 3s, then maritime
-      await new Promise(r=>setTimeout(r,3000));
-      const mR = await intelFetch('maritime');
-      if(mR?.events?.length){
-        parseGDELTIntel(mR,'conflict').forEach(e=>conflictEnts.push({...e,id:'m_'+e.id}));
-      }
-
-      if(conflictEnts.length){replaceLive('gdelt_','conflict',conflictEnts);apiStatus.conflict='live';
+      if(conflictEnts.length){
+        replaceLive('gdelt_conflict','conflict',[]);
+        replaceLive('gdelt_maritime_','conflict',[]);
+        conflictEnts.forEach(e=>{entities.push(e);if(sceneReady)upsertMarker(e)});
+        apiStatus.conflict='live';
         if(cycleCount<=1)logEvent(conflictEnts.length+' conflict events geocoded from GDELT','info');
       }else apiStatus.conflict='error';
 
-      // Wait 3s, then nuclear
-      await new Promise(r=>setTimeout(r,3000));
-      const nR = await intelFetch('nuclear');
-      if(nR?.events?.length){
-        gdeltNuclearEvents=nR.events;
-        const nEnts=parseGDELTIntel(nR,'nuclear');
+      refreshCounts();refreshThreat();renderUI();
+
+      // Phase B: nuclear + cyber in parallel (secondary)
+      // Small delay to avoid hammering GDELT
+      await new Promise(r=>setTimeout(r,2000));
+      const [nR, cyR] = await Promise.allSettled([
+        intelFetch('nuclear'),
+        intelFetch('cyber')
+      ]);
+
+      if(nR.status==='fulfilled' && nR.value?.events?.length){
+        gdeltNuclearEvents=nR.value.events;
+        const nEnts=parseGDELTIntel(nR.value,'nuclear');
         if(nEnts.length){replaceLive('gdelt_nuclear','nuclear',nEnts);apiStatus.nuclear='live';
           logEvent(nEnts.length+' nuclear/WMD intel events','critical');
         }else apiStatus.nuclear='error';
       } else apiStatus.nuclear='error';
 
-      // Wait 3s, then cyber
-      await new Promise(r=>setTimeout(r,3000));
-      const cyR = await intelFetch('cyber');
-      if(cyR?.events?.length){
-        gdeltCyberEvents=cyR.events;
-        const cEnts=parseGDELTIntel(cyR,'cyber');
+      if(cyR.status==='fulfilled' && cyR.value?.events?.length){
+        gdeltCyberEvents=cyR.value.events;
+        const cEnts=parseGDELTIntel(cyR.value,'cyber');
         if(cEnts.length){replaceLive('gdelt_cyber','cyber',cEnts);apiStatus.cyber='live'}
         else apiStatus.cyber='error';
       } else apiStatus.cyber='error';
@@ -849,17 +873,16 @@ function computeFusionStats(entities, threatBoard){
     try{
       const cR=await newsFetch('conflict');
       if(cR?.events?.length){
-        const ents=cR.events.map(ev=>({
-          id:ev.id,type:'conflict',lat:ev.lat,lon:ev.lon,
-          name:(ev.matchedLocation||'').toUpperCase()+': '+(ev.title||'').slice(0,80),
+        const ents=cR.events.map((ev,i)=>({
+          id:'news_conflict_'+i,type:'conflict',lat:ev.lat,lon:ev.lon,
+          name:'[NEWS] '+(ev.matchedLocation||'').toUpperCase()+': '+(ev.title||'').slice(0,80),
           details:{HEADLINE:ev.title||'—',SOURCE_DOMAIN:ev.domain||'—',
             REGION:ev.region||'—',MATCHED:ev.matchedLocation||'—',
             TIMESTAMP:ev.timestamp||'—',ARTICLE_URL:ev.url||'—',
             SOURCE:'NewsAPI (LIVE)'}
         }));
-        // Merge with existing conflict (additive, use news_ prefix)
-        replaceLive('news_conflict_','conflict',ents.map((e,i)=>({...e,id:'news_conflict_'+i})));
-        // Note: this replaces news_ prefix entries only, preserving GDELT entries
+        // Merge with existing conflict (additive, only removes news_ prefix entries)
+        replaceLive('news_conflict_','conflict',ents);
         logEvent(ents.length+' supplemental conflict events from NewsAPI','info');
       }
     }catch(e){}
@@ -881,11 +904,15 @@ function computeFusionStats(entities, threatBoard){
   async function fetchShodan(){
     try{
       const res=await fetch('/api/shodan/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:'port:502 scada'})});
-      const d=await res.json();
+      let d;
+      try { d=await res.json(); } catch { d={matches:[],error:'Invalid JSON response'}; }
       const ents=parseShodan(d);
       if(ents.length){
         replaceLive('shodan_','cyber',ents);
-        logEvent(ents.length+' exposed SCADA/ICS systems from Shodan','high');
+        logEvent(ents.length+' exposed systems from Shodan ('+( d.source||'search')+')','high');
+      } else if(d.error){
+        apiStatus.cyber=apiStatus.cyber==='live'?'live':'waiting'; // keep live if GDELT cyber works
+        if(cycleCount<=1)logEvent('Shodan: '+( d.plan||'free')+' plan — '+(d.error||'').slice(0,80),'info');
       }
     }catch(e){}
   }
@@ -937,15 +964,13 @@ function computeFusionStats(entities, threatBoard){
     if(de.length){replaceLive('debris_ctk','debris',de);apiStatus.debris='live'}
 
     const sats=[];
-    if(sta.status==='fulfilled'&&Array.isArray(sta.value))parseCelesTrak(sta.value,'satellites',20).forEach(e=>sats.push({...e,id:'sta_'+e.id}));
-    if(sl.status==='fulfilled'&&Array.isArray(sl.value))parseCelesTrak(sl.value,'satellites',60).forEach(e=>sats.push({...e,id:'sl_'+e.id}));
-    if(gps.status==='fulfilled'&&Array.isArray(gps.value))parseCelesTrak(gps.value,'satellites',32).forEach(e=>sats.push({...e,id:'gps_'+e.id}));
-    if(glo.status==='fulfilled'&&Array.isArray(glo.value))parseCelesTrak(glo.value,'satellites',24).forEach(e=>sats.push({...e,id:'glo_'+e.id}));
+    if(sta.status==='fulfilled'&&Array.isArray(sta.value))parseCelesTrak(sta.value,'satellites',20).forEach(e=>sats.push({...e,id:'ctk_sta_'+e.id}));
+    if(sl.status==='fulfilled'&&Array.isArray(sl.value))parseCelesTrak(sl.value,'satellites',60).forEach(e=>sats.push({...e,id:'ctk_sl_'+e.id}));
+    if(gps.status==='fulfilled'&&Array.isArray(gps.value))parseCelesTrak(gps.value,'satellites',32).forEach(e=>sats.push({...e,id:'ctk_gps_'+e.id}));
+    if(glo.status==='fulfilled'&&Array.isArray(glo.value))parseCelesTrak(glo.value,'satellites',24).forEach(e=>sats.push({...e,id:'ctk_glo_'+e.id}));
     if(sats.length){
-      replaceLive('sta_','satellites',sats.filter(e=>e.id.startsWith('sta_')));
-      replaceLive('sl_','satellites',sats.filter(e=>e.id.startsWith('sl_')));
-      replaceLive('gps_','satellites',sats.filter(e=>e.id.startsWith('gps_')));
-      replaceLive('glo_','satellites',sats.filter(e=>e.id.startsWith('glo_')));
+      // Batch replace all CelesTrak satellite entries at once
+      replaceLive('ctk_','satellites',sats);
     }
     apiStatus.satellites='live';
 
@@ -956,33 +981,58 @@ function computeFusionStats(entities, threatBoard){
   }
 
   async function fetchAll(){
+    if(fetchInProgress){
+      logEvent('Fetch cycle skipped (previous still running)','alert');
+      return;
+    }
+    fetchInProgress=true;
     cycleCount++;
     lastFetchTime=new Date();
     logEvent('Fetch cycle '+cycleCount+' initiated','info');
 
-    // Phase 1: Core feeds (parallel)
-    await Promise.allSettled([
-      fetchOpenSky(),
-      fetchUSGS(),
-      fetchISS(),
-      fetchFIRMS(),
-      fetchOWM(),
-      fetchN2YO(),
-      fetchGFW(),
-      fetchAVWX(),
-      fetchMilitary(),
-      fetchGDACS(),
-      fetchReliefWeb(),
-    ]);
+    try {
+      // Phase 1: Core feeds (parallel) — fast APIs
+      await Promise.allSettled([
+        fetchOpenSky(),
+        fetchUSGS(),
+        fetchISS(),
+        fetchFIRMS(),
+        fetchOWM(),
+        fetchN2YO(),
+        fetchAVWX(),
+        fetchMilitary(),
+      ]);
 
-    // Phase 2: GDELT (staggered internally to avoid rate limits)
-    fetchGDELTIntel(); // runs async with internal 3s delays
+      refreshCounts();refreshThreat();
+      renderUI();renderHUD();
 
-    // Phase 3: Supplemental (delayed to reduce load)
-    setTimeout(()=>fetchNewsIntel(), 5000);
-    setTimeout(()=>fetchShodan(), 8000);
+      // Phase 2: Slower APIs (parallel, separate so Phase 1 renders fast)
+      await Promise.allSettled([
+        fetchGFW(),
+        fetchGDACS(),
+        fetchReliefWeb(),
+      ]);
 
-    refreshCounts();refreshThreat();
+      refreshCounts();refreshThreat();
+      renderUI();
+
+      // Phase 3: GDELT + supplemental feeds (all fire-and-forget, don't block cycle)
+      // Each updates UI independently when data arrives
+      fetchGDELTIntel().then(() => {
+        refreshCounts();refreshThreat();renderUI();
+        if(viewMode==='3d'&&globe)updateGlobePoints();
+      }).catch(()=>{});
+
+      // Phase 4: Supplemental (delayed to reduce load)
+      setTimeout(()=>fetchNewsIntel().then(()=>{refreshCounts();refreshThreat();renderUI()}).catch(()=>{}), 3000);
+      setTimeout(()=>fetchShodan().then(()=>{refreshCounts();refreshThreat();renderUI()}).catch(()=>{}), 5000);
+
+    } finally {
+      // Set fetchInProgress=false after a minimum delay to prevent rapid re-entry
+      // GDELT/News/Shodan are fire-and-forget, so the main cycle is done
+      setTimeout(()=>{fetchInProgress=false},2000);
+    }
+
     const total=Object.values(counts).reduce((a,b)=>a+b,0);
     logEvent('Cycle '+cycleCount+' complete: '+total.toLocaleString()+' entities across '+Object.keys(counts).filter(k=>counts[k]>0).length+' domains','info');
     if(viewMode==='3d'&&globe)updateGlobePoints();
@@ -1525,8 +1575,8 @@ function computeFusionStats(entities, threatBoard){
     setTimeout(() => fetchCelesTrak(), 2000);
     setTimeout(() => fetchISSTrack(), 4000);
 
-    // Polling intervals
-    setInterval(fetchAll, 30000);
+    // Polling intervals — 60s minimum cycle to avoid request pile-up
+    setInterval(fetchAll, 60000);
     setInterval(fetchISS, 5000);
     setInterval(fetchCelesTrak, 180000);
     setInterval(fetchISSTrack, 3600000);

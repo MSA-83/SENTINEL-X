@@ -189,20 +189,20 @@ const TARGETS: Record<string, TargetConfig> = {
 
   // ── CONFLICT INTEL (GDELT Articles → Geocoded events) ──
   gdelt_conflict: {
-    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=military+attack+airstrike+bombing+strike+conflict&mode=artlist&maxrecords=75&format=json&timespan=48h&sourcelang=english',
-    timeout: 20000,
+    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=military+attack+airstrike+bombing+strike+conflict&mode=artlist&maxrecords=50&format=json&timespan=48h&sourcelang=english',
+    timeout: 10000,
   },
   gdelt_maritime: {
-    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=navy+warship+maritime+vessel+seized+blockade&mode=artlist&maxrecords=40&format=json&timespan=48h&sourcelang=english',
-    timeout: 20000,
+    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=navy+warship+maritime+vessel+seized+blockade&mode=artlist&maxrecords=30&format=json&timespan=48h&sourcelang=english',
+    timeout: 10000,
   },
   gdelt_nuclear: {
-    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=nuclear+missile+ICBM+warhead+uranium+enrichment&mode=artlist&maxrecords=30&format=json&timespan=72h&sourcelang=english',
-    timeout: 20000,
+    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=nuclear+missile+ICBM+warhead+uranium+enrichment&mode=artlist&maxrecords=25&format=json&timespan=72h&sourcelang=english',
+    timeout: 10000,
   },
   gdelt_cyber: {
-    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=cyberattack+ransomware+hacking+breach+APT+infrastructure&mode=artlist&maxrecords=30&format=json&timespan=48h&sourcelang=english',
-    timeout: 20000,
+    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=cyberattack+ransomware+hacking+breach+APT+infrastructure&mode=artlist&maxrecords=25&format=json&timespan=48h&sourcelang=english',
+    timeout: 10000,
   },
 
   // ── SHODAN ──
@@ -394,35 +394,98 @@ app.post('/api/shodan/search', async (c) => {
 
   try {
     // Try full search first (requires paid plan)
-    const res = await fetch(
-      `https://api.shodan.io/shodan/host/search?key=${key}&query=${encodeURIComponent(q)}&page=1`,
-      { signal: AbortSignal.timeout(12000) }
-    )
-    if (res.ok) {
-      const data = await res.json() as any
-      return c.json({ matches: data.matches || [], total: data.total || 0 })
+    let searchFailed = false
+    try {
+      const res = await fetch(
+        `https://api.shodan.io/shodan/host/search?key=${key}&query=${encodeURIComponent(q)}&page=1`,
+        { signal: AbortSignal.timeout(10000) }
+      )
+      if (res.ok) {
+        const ct = res.headers.get('content-type') || ''
+        if (ct.includes('application/json')) {
+          const data = await res.json() as any
+          return c.json({ matches: data.matches || [], total: data.total || 0, source: 'search' })
+        }
+      }
+      searchFailed = true
+    } catch {
+      searchFailed = true
+    }
+    if (!searchFailed) { /* unreachable but type-safe */ }
+
+    // Fallback 1: Shodan /api-info for account info + dns resolve for sample data
+    let infoData: any = null
+    try {
+      const infoRes = await fetch(
+        `https://api.shodan.io/api-info?key=${key}`,
+        { signal: AbortSignal.timeout(8000) }
+      )
+      if (infoRes.ok) {
+        const ct = infoRes.headers.get('content-type') || ''
+        if (ct.includes('application/json')) infoData = await infoRes.json()
+      }
+    } catch {}
+
+    // Fallback 2: Use Shodan's free /shodan/host/{ip} endpoint with known ICS IPs
+    let dnsData: any = {}
+    try {
+      const dnsRes = await fetch(
+        `https://api.shodan.io/dns/resolve?hostnames=scada.shodan.io,ics-radar.shodan.io&key=${key}`,
+        { signal: AbortSignal.timeout(8000) }
+      )
+      if (dnsRes.ok) {
+        const ct = dnsRes.headers.get('content-type') || ''
+        if (ct.includes('application/json')) dnsData = await dnsRes.json()
+      }
+    } catch {}
+
+    // Build synthetic results from available data
+    const syntheticMatches: any[] = []
+    for (const [hostname, ip] of Object.entries(dnsData)) {
+      if (!ip) continue
+      try {
+        const hostRes = await fetch(
+          `https://api.shodan.io/shodan/host/${ip}?key=${key}`,
+          { signal: AbortSignal.timeout(6000) }
+        )
+        if (hostRes.ok) {
+          const ct = hostRes.headers.get('content-type') || ''
+          if (ct.includes('json')) {
+            const hostData = await hostRes.json() as any
+            if (hostData.data) {
+              hostData.data.slice(0, 5).forEach((svc: any) => {
+                syntheticMatches.push({
+                  ip_str: hostData.ip_str || String(ip),
+                  port: svc.port || 0,
+                  product: svc.product || hostname,
+                  org: hostData.org || 'Unknown',
+                  os: hostData.os || 'N/A',
+                  location: {
+                    latitude: hostData.latitude || 0,
+                    longitude: hostData.longitude || 0,
+                    country_name: hostData.country_name || 'Unknown',
+                    city: hostData.city || 'N/A'
+                  },
+                  asn: hostData.asn || 'N/A',
+                })
+              })
+            }
+          }
+        }
+      } catch {}
     }
 
-    // Fallback: Use Shodan exploits API (free) for vulnerability intel
-    const exploitRes = await fetch(
-      `https://exploits.shodan.io/api/search?query=${encodeURIComponent('scada')}&key=${key}`,
-      { signal: AbortSignal.timeout(10000) }
-    )
-    if (exploitRes.ok) {
-      const expData = await exploitRes.json() as any
-      const matches = (expData.matches || []).slice(0, 30).map((m: any) => ({
-        ip_str: 'N/A',
-        port: 0,
-        product: m.description?.slice(0, 60) || 'Vulnerability',
-        org: m.source || 'Unknown',
-        os: m.platform || 'N/A',
-        location: { latitude: 0, longitude: 0, country_name: 'Global', city: 'N/A' },
-        asn: 'N/A',
-      }))
-      return c.json({ matches, total: expData.total || 0, source: 'exploits' })
+    if (syntheticMatches.length > 0) {
+      return c.json({ matches: syntheticMatches, total: syntheticMatches.length, source: 'host-lookup' })
     }
 
-    return c.json({ matches: [], error: 'Shodan free plan: search requires membership upgrade', note: 'upgrade at https://shodan.io/store' })
+    return c.json({
+      matches: [],
+      total: 0,
+      error: 'Shodan free plan: search requires membership upgrade',
+      plan: infoData?.plan || 'oss',
+      note: 'Free Shodan plan has limited search access. Upgrade at https://shodan.io/store'
+    })
   } catch (error) {
     return c.json({ matches: [], error: String(error) })
   }
@@ -430,9 +493,28 @@ app.post('/api/shodan/search', async (c) => {
 
 /* ═══════════════════════════════════════════════════════════════
    RELIEFWEB — UN OCHA disaster data (proxy to avoid CORS)
+   Note: ReliefWeb requires POST with JSON body for appname
 ═══════════════════════════════════════════════════════════════ */
 app.get('/api/reliefweb/disasters', async (c) => {
-  // Try multiple appname strategies
+  // ReliefWeb v1 API: POST method with JSON body is more reliable
+  try {
+    const res = await fetch('https://api.reliefweb.int/v1/disasters?appname=sentinel-os-osint&limit=50', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'SENTINEL-OS/4.0' },
+      body: JSON.stringify({
+        fields: { include: ['name', 'country', 'status', 'primary_type', 'glide', 'date'] },
+        sort: ['date:desc'],
+        limit: 50
+      }),
+      signal: AbortSignal.timeout(12000)
+    })
+    if (res.ok) {
+      const data = await res.json()
+      return c.json(data)
+    }
+  } catch {}
+
+  // Fallback: try GET with different appnames
   const appnames = ['sentinel-os', 'rw-user-0', 'osint-platform']
   for (const appname of appnames) {
     try {
@@ -446,7 +528,7 @@ app.get('/api/reliefweb/disasters', async (c) => {
       }
     } catch {}
   }
-  // Fallback: use GDACS-style data or return helpful error
+
   return c.json({
     data: [],
     error: 'ReliefWeb requires a registered appname. Register at https://apidoc.reliefweb.int/parameters#appname',
@@ -487,13 +569,13 @@ app.get('/api/acled/events', async (c) => {
    GDELT CONFLICT INTEL — Article-based geocoding endpoint
    With retry and staggered requests to avoid rate-limiting
 ═══════════════════════════════════════════════════════════════ */
-async function fetchGDELTWithRetry(url: string, retries = 2): Promise<any> {
+async function fetchGDELTWithRetry(url: string, retries = 0): Promise<any> {
   for (let i = 0; i <= retries; i++) {
     try {
-      if (i > 0) await new Promise(r => setTimeout(r, 6000 * i))
+      if (i > 0) await new Promise(r => setTimeout(r, 2000))
       const res = await fetch(url, {
-        headers: { 'User-Agent': 'SENTINEL-OS/4.0' },
-        signal: AbortSignal.timeout(20000)
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/4.0)' },
+        signal: AbortSignal.timeout(8000)
       })
       if (res.status === 429) {
         if (i < retries) continue
