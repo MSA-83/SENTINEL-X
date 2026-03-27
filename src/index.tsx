@@ -461,8 +461,8 @@ app.post('/api/shodan/search', async (c) => {
                   org: hostData.org || 'Unknown',
                   os: hostData.os || 'N/A',
                   location: {
-                    latitude: hostData.latitude || 0,
-                    longitude: hostData.longitude || 0,
+                    latitude: Number.isFinite(hostData.latitude) ? hostData.latitude : null,
+                    longitude: Number.isFinite(hostData.longitude) ? hostData.longitude : null,
                     country_name: hostData.country_name || 'Unknown',
                     city: hostData.city || 'N/A'
                   },
