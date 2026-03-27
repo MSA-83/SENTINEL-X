@@ -429,7 +429,7 @@ function parseGDACS(data){
   const features=data?.features||[];
   return features.map((f,i)=>{
     const p=f.properties||{},coords=f.geometry?.coordinates||[],lat=coords[1],lon=coords[0];
-    if(!lat||!lon)return null;
+    if(!Number.isFinite(lat)||!Number.isFinite(lon))return null;
     const evType=(p.eventtype||'EVENT').toUpperCase();
     const typeEmoji={'EQ':'EQ','TC':'TC','FL':'FL','VO':'VO','TS':'TS'}[evType]||'EV';
     return{id:'gdacs_'+i,type:'disasters',lat,lon,
@@ -477,7 +477,7 @@ function parseShodan(data){
   if(!data?.matches||!Array.isArray(data.matches))return[];
   return data.matches.slice(0,40).map((m,i)=>{
     const lat=m.location?.latitude,lon=m.location?.longitude;
-    if(!lat||!lon)return null;
+    if(!Number.isFinite(lat)||!Number.isFinite(lon))return null;
     const port=m.port||'—',org=m.org||'—',product=m.product||'—';
     return{id:'shodan_'+i,type:'cyber',lat,lon,
       name:'EXPOSED: '+m.ip_str+':'+port+' ('+product+')',
