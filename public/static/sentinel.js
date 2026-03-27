@@ -513,7 +513,7 @@ const API_REF = [
   { name:'CelesTrak TLE',      cost:'FREE', key:'NO KEY',    status:'live', domain:'Orbital' },
   { name:'GDELT 2.0 Articles', cost:'FREE', key:'NO KEY',    status:'live', domain:'Conflict' },
   { name:'GDACS UN OCHA',      cost:'FREE', key:'NO KEY',    status:'live', domain:'Disaster' },
-  { name:'ReliefWeb OCHA',     cost:'FREE', key:'REGISTER',  status:'pending', domain:'Disaster' },
+  { name:'ReliefWeb OCHA',     cost:'FREE', key:'APPNAME',   status:'live', domain:'Disaster' },
   { name:'NASA FIRMS',         cost:'FREE', key:'ENV',       status:'live', domain:'Wildfire' },
   { name:'N2YO Satellites',    cost:'FREE', key:'ENV',       status:'live', domain:'Orbital' },
   { name:'OpenWeatherMap',     cost:'FREE', key:'ENV',       status:'live', domain:'Weather' },

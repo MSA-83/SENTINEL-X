@@ -183,7 +183,7 @@ const TARGETS: Record<string, TargetConfig> = {
     timeout: 16000,
   },
   reliefweb: {
-    url: 'https://api.reliefweb.int/v1/disasters?appname=sentinel-os&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date',
+    url: 'https://api.reliefweb.int/v1/disasters?appname=SMansabdar-SentinelXresearchdashboard-7f9c2a&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date',
     timeout: 14000,
   },
 
@@ -496,9 +496,11 @@ app.post('/api/shodan/search', async (c) => {
    Note: ReliefWeb requires POST with JSON body for appname
 ═══════════════════════════════════════════════════════════════ */
 app.get('/api/reliefweb/disasters', async (c) => {
-  // ReliefWeb v1 API: POST method with JSON body is more reliable
+  const APPNAME = 'SMansabdar-SentinelXresearchdashboard-7f9c2a'
+
+  // ReliefWeb v1 API: POST method with appname in query + JSON body
   try {
-    const res = await fetch('https://api.reliefweb.int/v1/disasters?appname=sentinel-os-osint&limit=50', {
+    const res = await fetch(`https://api.reliefweb.int/v1/disasters?appname=${APPNAME}&limit=50`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'SENTINEL-OS/4.0' },
       body: JSON.stringify({
@@ -514,25 +516,22 @@ app.get('/api/reliefweb/disasters', async (c) => {
     }
   } catch {}
 
-  // Fallback: try GET with different appnames
-  const appnames = ['sentinel-os', 'rw-user-0', 'osint-platform']
-  for (const appname of appnames) {
-    try {
-      const res = await fetch(
-        `https://api.reliefweb.int/v1/disasters?appname=${appname}&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date`,
-        { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'SENTINEL-OS/4.0' } }
-      )
-      if (res.ok) {
-        const data = await res.json()
-        return c.json(data)
-      }
-    } catch {}
-  }
+  // Fallback: GET with registered appname
+  try {
+    const res = await fetch(
+      `https://api.reliefweb.int/v1/disasters?appname=${APPNAME}&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date`,
+      { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'SENTINEL-OS/4.0' } }
+    )
+    if (res.ok) {
+      const data = await res.json()
+      return c.json(data)
+    }
+  } catch {}
 
   return c.json({
     data: [],
-    error: 'ReliefWeb requires a registered appname. Register at https://apidoc.reliefweb.int/parameters#appname',
-    note: 'GDACS serves as the primary disaster feed. ReliefWeb will work after registration.'
+    error: 'ReliefWeb API request failed',
+    note: 'GDACS serves as the primary disaster feed.'
   })
 })
 
