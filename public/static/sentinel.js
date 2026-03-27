@@ -477,7 +477,10 @@ function parseShodan(data){
   if(!data?.matches||!Array.isArray(data.matches))return[];
   return data.matches.slice(0,40).map((m,i)=>{
     const lat=m.location?.latitude,lon=m.location?.longitude;
+    const isSyntheticZeroZero=lat===0&&lon===0&&
+      (m.location?.country_name==='Unknown'||m.location?.city==='N/A');
     if(!Number.isFinite(lat)||!Number.isFinite(lon))return null;
+    if(isSyntheticZeroZero)return null;
     const port=m.port||'—',org=m.org||'—',product=m.product||'—';
     return{id:'shodan_'+i,type:'cyber',lat,lon,
       name:'EXPOSED: '+m.ip_str+':'+port+' ('+product+')',
