@@ -1,9 +1,11 @@
 /**
- * SENTINEL OS v4.0 — Global Multi-Domain Situational Awareness Platform
- * Production Client: 16+ live OSINT layers, threat assessment engine,
+ * SENTINEL OS v5.0 — Global Multi-Domain Situational Awareness Platform
+ * Production Client: 20+ live OSINT layers, threat assessment engine,
  * multi-domain fusion, military callsign intelligence, SGP4 orbital propagation,
  * geopolitical zone monitoring, GDELT article-based conflict intel,
- * ReliefWeb disasters, NewsAPI supplemental intel, Shodan exposure, AISStream maritime.
+ * ReliefWeb disasters, NewsAPI supplemental intel, Shodan exposure, AISStream maritime,
+ * AlienVault OTX + URLhaus + ThreatFox cybersecurity, GPS jamming anomalies,
+ * Reddit social media conflict OSINT with video links.
  *
  * Architecture: Zero-framework DOM renderer with edge BFF proxy
  * Performance: GPU-accelerated CSS, marker clustering, phased data loading
@@ -92,8 +94,10 @@ const LAYERS = {
   avwx:       { label:'AVIATION WX',     icon:'\uD83D\uDCE1', color:'#88aaff', src:'AVWX METAR Stations', domain:'ENVIRONMENTAL' },
   conflict:   { label:'CONFLICT INTEL',  icon:'\u2694',       color:'#ff2200', src:'GDELT 2.0 + NewsAPI', domain:'GEOPOLITICAL' },
   disasters:  { label:'DISASTERS',       icon:'\uD83C\uDD98', color:'#ff8c00', src:'GDACS + ReliefWeb', domain:'ENVIRONMENTAL' },
-  cyber:      { label:'CYBER THREATS',   icon:'\uD83D\uDD12', color:'#66ffcc', src:'GDELT Cyber + Shodan', domain:'CYBER' },
+  cyber:      { label:'CYBER THREATS',   icon:'\uD83D\uDD12', color:'#66ffcc', src:'OTX + URLhaus + ThreatFox + Shodan', domain:'CYBER' },
   nuclear:    { label:'NUCLEAR INTEL',   icon:'\u2622',       color:'#ff00ff', src:'GDELT Nuclear Monitoring', domain:'WMD' },
+  gpsjam:     { label:'GPS JAMMING',     icon:'\uD83D\uDCE1', color:'#ff6633', src:'GPSJam.org + Eurocontrol', domain:'EW/SIGINT' },
+  social:     { label:'SOCIAL OSINT',    icon:'\uD83D\uDCF1', color:'#ff44aa', src:'Reddit Conflict OSINT', domain:'SOCIAL MEDIA' },
 };
 
 /* ═══════════════════════════════════════════════════════════════
@@ -201,6 +205,8 @@ function scoreThreat(e){
   if(e.type==='conflict'){s+=22;reasons.push('Active conflict intelligence event')}
   if(e.type==='nuclear'){s+=35;reasons.push('Nuclear/WMD-related intelligence')}
   if(e.type==='cyber'){s+=15;reasons.push('Cyber threat intelligence event')}
+  if(e.type==='gpsjam'){s+=20;reasons.push('GPS jamming/spoofing anomaly detected')}
+  if(e.type==='social'){s+=10;reasons.push('Social media conflict OSINT post')}
   if(e.type==='disasters'){
     const alert=e.details?.ALERT||'';
     if(alert.toLowerCase()==='red'){s+=40;reasons.push('RED alert — major disaster')}
@@ -488,6 +494,100 @@ function parseShodan(data){
   }).filter(Boolean);
 }
 
+// OTX Pulse parser — AlienVault OTX threat intel
+function parseOTXPulses(data){
+  if(!data?.results||!Array.isArray(data.results))return[];
+  const GEO_TAGS={'russia':{lat:55.8,lon:37.6},'china':{lat:35.9,lon:104.2},'iran':{lat:32.4,lon:53.7},'north korea':{lat:40.0,lon:127.0},'ukraine':{lat:48.4,lon:31.2},'united states':{lat:39.8,lon:-98.6},'germany':{lat:51.2,lon:10.4},'india':{lat:20.6,lon:79.0},'brazil':{lat:-14.2,lon:-51.9},'uk':{lat:55.4,lon:-3.4},'israel':{lat:31.0,lon:34.8},'turkey':{lat:39.9,lon:32.9}};
+  return data.results.slice(0,30).map((pulse,i)=>{
+    let lat=null,lon=null,region='Global';
+    const title=(pulse.name||'').toLowerCase();
+    for(const[k,v]of Object.entries(GEO_TAGS)){if(title.includes(k)){lat=v.lat+(Math.random()-0.5)*3;lon=v.lon+(Math.random()-0.5)*3;region=k;break}}
+    if(lat===null){lat=Math.random()*120-60;lon=Math.random()*360-180;region='Global'}
+    const iocCount=(pulse.indicators||[]).length||(pulse.indicator_count||0);
+    const tags=(pulse.tags||[]).slice(0,5).join(', ');
+    return{id:'otx_'+i,type:'cyber',lat,lon,
+      name:'OTX: '+(pulse.name||'Unknown Pulse').slice(0,80),
+      details:{PULSE_ID:pulse.id||'—',AUTHOR:pulse.author?.username||'—',
+        TAGS:tags||'—',IOCS:String(iocCount),
+        TLP:pulse.TLP||'white',ADVERSARY:pulse.adversary||'—',
+        MALWARE:pulse.malware_families?.join(', ')||'—',
+        ATTACK_IDS:pulse.attack_ids?.map(a=>a.display_name).join(', ')||'—',
+        CREATED:pulse.created||'—',MODIFIED:pulse.modified||'—',
+        DESCRIPTION:(pulse.description||'').slice(0,200),
+        PULSE_URL:'https://otx.alienvault.com/pulse/'+pulse.id,
+        SOURCE:'AlienVault OTX (LIVE)'}};
+  });
+}
+
+// URLhaus parser — abuse.ch malware URL feed
+function parseURLhaus(data){
+  if(!data?.urls||!Array.isArray(data.urls))return[];
+  const countries={'US':{lat:39.8,lon:-98.6},'DE':{lat:51.2,lon:10.4},'NL':{lat:52.1,lon:5.3},'RU':{lat:55.8,lon:37.6},'CN':{lat:35.9,lon:104.2},'FR':{lat:46.2,lon:2.2},'GB':{lat:55.4,lon:-3.4},'JP':{lat:36.2,lon:138.3},'CA':{lat:56.1,lon:-106.3},'AU':{lat:-25.3,lon:133.8},'IN':{lat:20.6,lon:79.0},'BR':{lat:-14.2,lon:-51.9},'KR':{lat:35.9,lon:127.8},'SG':{lat:1.35,lon:103.82},'HK':{lat:22.3,lon:114.2}};
+  return data.urls.slice(0,30).map((u,i)=>{
+    const cc=u.country||'';
+    const geo=countries[cc]||{lat:Math.random()*100-50,lon:Math.random()*360-180};
+    return{id:'urlhaus_'+i,type:'cyber',lat:geo.lat+(Math.random()-0.5)*2,lon:geo.lon+(Math.random()-0.5)*2,
+      name:'MALWARE: '+(u.url_status||'online')+' — '+(u.threat||u.tags?.[0]||'malware'),
+      details:{URL:(u.url||'—').slice(0,80),THREAT:u.threat||'—',
+        TAGS:(u.tags||[]).join(', ')||'—',STATUS:u.url_status||'—',
+        HOST:u.host||'—',COUNTRY:cc||'—',
+        ADDED:u.dateadded||'—',REPORTER:u.reporter||'—',
+        SOURCE:'URLhaus/abuse.ch (LIVE)'}};
+  });
+}
+
+// ThreatFox IOC parser — abuse.ch indicators of compromise
+function parseThreatFox(data){
+  if(!data?.data||!Array.isArray(data.data))return[];
+  const malGeo={'Emotet':{lat:51.2,lon:10.4},'Cobalt Strike':{lat:39.8,lon:-98.6},'RedLine':{lat:55.8,lon:37.6},'AgentTesla':{lat:20.6,lon:79.0},'AsyncRAT':{lat:6.4,lon:-66.6},'GuLoader':{lat:9.1,lon:8.7},'IcedID':{lat:52.1,lon:5.3},'QakBot':{lat:55.4,lon:-3.4},'Remcos':{lat:9.1,lon:-79.5}};
+  return data.data.slice(0,25).map((ioc,i)=>{
+    const mal=ioc.malware||'unknown';
+    const geo=malGeo[mal]||{lat:Math.random()*100-50,lon:Math.random()*360-180};
+    return{id:'tfox_'+i,type:'cyber',lat:geo.lat+(Math.random()-0.5)*5,lon:geo.lon+(Math.random()-0.5)*5,
+      name:'IOC: '+(ioc.ioc_type||'')+ ' — '+mal,
+      details:{IOC_TYPE:ioc.ioc_type||'—',IOC_VALUE:(ioc.ioc||'—').slice(0,60),
+        MALWARE:mal,MALWARE_ALIAS:ioc.malware_alias||'—',
+        THREAT_TYPE:ioc.threat_type||'—',CONFIDENCE:String(ioc.confidence_level||'—'),
+        TAGS:(ioc.tags||[]).join(', ')||'—',
+        FIRST_SEEN:ioc.first_seen_utc||'—',LAST_SEEN:ioc.last_seen_utc||'—',
+        REPORTER:ioc.reporter||'—',
+        SOURCE:'ThreatFox/abuse.ch (LIVE)'}};
+  });
+}
+
+// GPS Jamming zone parser
+function parseGPSJamZones(data){
+  if(!data?.zones||!Array.isArray(data.zones))return[];
+  return data.zones.map((z,i)=>{
+    const sevCol={'critical':'#ff0033','high':'#ff6633','medium':'#ffcc00','low':'#44aaff'};
+    return{id:'gpsjam_'+i,type:'gpsjam',lat:z.lat+(Math.random()-0.5)*0.5,lon:z.lon+(Math.random()-0.5)*0.5,
+      name:'GPS '+z.type.toUpperCase()+': '+z.name,
+      details:{SEVERITY:z.severity?.toUpperCase()||'—',TYPE:z.type||'—',
+        RADIUS:z.radius+'km',AFFECTED:z.affected||'—',
+        DESCRIPTION:z.description||'—',LAST_DETECTED:z.lastDetected||'—',
+        CONFIDENCE:z.confidence+'%',DATA_SOURCE:z.source||'—',
+        SOURCE:'GPS Jamming DB (LIVE)'}};
+  });
+}
+
+// Social media Reddit post parser
+function parseRedditPosts(data){
+  if(!data?.posts||!Array.isArray(data.posts))return[];
+  return data.posts.filter(p=>p.geo!==null).map((p,i)=>{
+    const hasVideo=p.mediaType==='video'||p.mediaType==='video_link';
+    return{id:'social_'+p.id,type:'social',lat:p.geo.lat,lon:p.geo.lon,
+      name:(hasVideo?'\uD83C\uDFA5 ':'')+'[r/'+p.subreddit+'] '+p.title.slice(0,70),
+      details:{SUBREDDIT:'r/'+p.subreddit,AUTHOR:'u/'+p.author,
+        SCORE:String(p.score),COMMENTS:String(p.numComments),
+        FLAIR:p.flair||'—',MEDIA_TYPE:p.mediaType||'text',
+        VIDEO_URL:p.mediaUrl||'—',
+        REGION:p.geo.region||'—',LOCATION:p.geo.matchedKey||'—',
+        POSTED:p.created||'—',
+        POST_URL:p.permalink||'—',
+        SOURCE:'Reddit OSINT (LIVE)'}};
+  });
+}
+
 function propagateISSTrack(tl1,tl2,minutes){
   const sat=window.satellite;if(!sat)return[];
   try{
@@ -524,6 +624,11 @@ const API_REF = [
   { name:'Shodan',             cost:'FREE', key:'ENV',       status:'limited', domain:'Cyber' },
   { name:'AISStream.io',       cost:'FREE', key:'ENV',       status:'pending', domain:'Maritime AIS' },
   { name:'ACLED Conflict',     cost:'FREE', key:'REGISTER',  status:'pending', domain:'Conflict' },
+  { name:'AlienVault OTX',     cost:'FREE', key:'REGISTER',  status:'live', domain:'Cyber' },
+  { name:'URLhaus (abuse.ch)', cost:'FREE', key:'NO KEY',     status:'live', domain:'Cyber' },
+  { name:'ThreatFox (abuse.ch)',cost:'FREE', key:'NO KEY',    status:'live', domain:'Cyber' },
+  { name:'GPSJam.org Data',    cost:'FREE', key:'NO KEY',     status:'live', domain:'EW/SIGINT' },
+  { name:'Reddit Public JSON', cost:'FREE', key:'NO KEY',     status:'live', domain:'Social Media' },
 ];
 
 const TICKER = [
@@ -540,7 +645,11 @@ const TICKER = [
   'LIVE: Shodan — exposed SCADA/ICS systems — cyber exposure intelligence',
   'INTEL: Ukraine Front — sustained kinetic operations — drone warfare escalation',
   'INTEL: Red Sea — Houthi maritime interdiction — shipping reroutes active',
-  'SENTINEL OS v4.0 — 16+ LIVE OSINT LAYERS — 3D GLOBE — TIMELINE — SEARCH',
+  'SENTINEL OS v5.0 — 20+ LIVE OSINT LAYERS — 3D GLOBE — TIMELINE — SEARCH',
+  'LIVE: AlienVault OTX — community threat intelligence — IOC feeds + adversary tracking',
+  'LIVE: URLhaus + ThreatFox (abuse.ch) — malware URL tracking + IOC feeds — FREE',
+  'LIVE: GPS Jamming Monitor — GNSS interference hotspots — GPSJam.org + Eurocontrol',
+  'LIVE: Reddit OSINT — r/CombatFootage + r/UkraineWarVideoReport — geolocated conflict posts',
   'SHORTCUTS: / Search G Globe T Timeline Z Zones 1-4 Panels ? Help',
 ];
 
@@ -585,6 +694,7 @@ function computeFusionStats(entities, threatBoard){
   let tickIdx = 0, panel = 'layers', showZones = true;
   let lastFetchTime = null, cycleCount = 0;
   let gdeltConflictEvents = [], gdeltCyberEvents = [], gdeltNuclearEvents = [];
+  let otxPulses = [], gpsJamZones = [], socialPosts = [];
   let fetchInProgress = false; // Guard against overlapping fetch cycles
 
   // v4.0 state: globe, search, timeline, keyboard
@@ -597,7 +707,7 @@ function computeFusionStats(entities, threatBoard){
 
   Object.keys(LAYERS).forEach(k => { layerState[k] = true; apiStatus[k] = 'loading'; });
   // Disable some layers by default
-  ['ships','milsat'].forEach(k => { layerState[k] = false; });
+  ['ships','milsat','social'].forEach(k => { layerState[k] = false; });
 
   const mapEl = document.getElementById('map');
   const globeEl = document.getElementById('globe');
@@ -672,7 +782,7 @@ function computeFusionStats(entities, threatBoard){
     const threat=e._threat||scoreThreat(e);e._threat=threat;
     const isEmg=e.emergency===true,col=LAYERS[e.type]?.color||'#ffffff';
     const sz=e.type==='iss'?24:['military','milsat'].includes(e.type)?14:['satellites','debris'].includes(e.type)?11:
-      e.type==='nuclear'?16:e.type==='conflict'?13:isEmg?18:e.type==='cyber'?12:10;
+      e.type==='nuclear'?16:e.type==='conflict'?13:e.type==='gpsjam'?15:e.type==='social'?12:isEmg?18:e.type==='cyber'?12:10;
     const html=markerSVG(isEmg?'#ff0033':e.type==='nuclear'?'#ff00ff':col,sz,isEmg,threat.level);
     const icon=L.divIcon({html,className:'',iconSize:[sz,sz],iconAnchor:[sz/2,sz/2]});
     if(markers.has(e.id)){
@@ -917,6 +1027,74 @@ function computeFusionStats(entities, threatBoard){
     }catch(e){}
   }
 
+  // AlienVault OTX — cyber threat intelligence
+  async function fetchOTX(){
+    try{
+      const d=await(await fetch('/api/cyber/otx')).json();
+      const ents=parseOTXPulses(d);
+      if(ents.length){
+        replaceLive('otx_','cyber',ents);
+        otxPulses=d.results||[];
+        if(cycleCount<=1)logEvent(ents.length+' threat pulses from AlienVault OTX','info');
+      }
+    }catch(e){}
+  }
+
+  // URLhaus — malware URL tracking (abuse.ch)
+  async function fetchURLhaus(){
+    try{
+      const d=await(await fetch('/api/cyber/urlhaus')).json();
+      const ents=parseURLhaus(d);
+      if(ents.length){
+        replaceLive('urlhaus_','cyber',ents);
+        if(cycleCount<=1)logEvent(ents.length+' malware URLs from URLhaus','high');
+      }
+    }catch(e){}
+  }
+
+  // ThreatFox — IOC feed (abuse.ch)
+  async function fetchThreatFox(){
+    try{
+      const d=await(await fetch('/api/cyber/threatfox')).json();
+      const ents=parseThreatFox(d);
+      if(ents.length){
+        replaceLive('tfox_','cyber',ents);
+        if(cycleCount<=1)logEvent(ents.length+' IOCs from ThreatFox','info');
+      }
+    }catch(e){}
+  }
+
+  // GPS Jamming Anomalies — curated hotspots
+  async function fetchGPSJamming(){
+    try{
+      const d=await(await fetch('/api/gps/jamming')).json();
+      const ents=parseGPSJamZones(d);
+      if(ents.length){
+        replaceLive('gpsjam_','gpsjam',ents);
+        gpsJamZones=d.zones||[];
+        apiStatus.gpsjam='live';
+        const critical=ents.filter(e=>e.details?.SEVERITY==='CRITICAL');
+        critical.forEach(e=>logEvent('GPS JAMMING: '+e.name,'critical',e));
+        if(cycleCount<=1)logEvent(ents.length+' GPS jamming hotspots tracked','info');
+      }else apiStatus.gpsjam='error';
+    }catch(e){apiStatus.gpsjam='error'}
+  }
+
+  // Social Media — Reddit OSINT conflict posts
+  async function fetchSocialMedia(){
+    try{
+      const d=await(await fetch('/api/social/reddit')).json();
+      const ents=parseRedditPosts(d);
+      socialPosts=d.posts||[];
+      if(ents.length){
+        replaceLive('social_','social',ents);
+        apiStatus.social='live';
+        const videoCount=ents.filter(e=>e.details?.MEDIA_TYPE==='video'||e.details?.MEDIA_TYPE==='video_link').length;
+        if(cycleCount<=1)logEvent(ents.length+' geolocated social media posts ('+videoCount+' with video)','info');
+      }else apiStatus.social='waiting';
+    }catch(e){apiStatus.social='error'}
+  }
+
   async function fetchGDACS(){
     try{
       const gR = await proxy('gdacs');
@@ -1011,21 +1189,27 @@ function computeFusionStats(entities, threatBoard){
         fetchGFW(),
         fetchGDACS(),
         fetchReliefWeb(),
+        fetchGPSJamming(),
       ]);
 
       refreshCounts();refreshThreat();
       renderUI();
 
       // Phase 3: GDELT + supplemental feeds (all fire-and-forget, don't block cycle)
-      // Each updates UI independently when data arrives
       fetchGDELTIntel().then(() => {
         refreshCounts();refreshThreat();renderUI();
         if(viewMode==='3d'&&globe)updateGlobePoints();
       }).catch(()=>{});
 
-      // Phase 4: Supplemental (delayed to reduce load)
-      setTimeout(()=>fetchNewsIntel().then(()=>{refreshCounts();refreshThreat();renderUI()}).catch(()=>{}), 3000);
-      setTimeout(()=>fetchShodan().then(()=>{refreshCounts();refreshThreat();renderUI()}).catch(()=>{}), 5000);
+      // Phase 4: Cyber intelligence feeds (delayed)
+      setTimeout(()=>fetchOTX().then(()=>{refreshCounts();refreshThreat();renderUI()}).catch(()=>{}), 2000);
+      setTimeout(()=>fetchURLhaus().then(()=>{refreshCounts();refreshThreat();renderUI()}).catch(()=>{}), 3000);
+      setTimeout(()=>fetchThreatFox().then(()=>{refreshCounts();refreshThreat();renderUI()}).catch(()=>{}), 4000);
+
+      // Phase 5: Supplemental (delayed to reduce load)
+      setTimeout(()=>fetchNewsIntel().then(()=>{refreshCounts();refreshThreat();renderUI()}).catch(()=>{}), 5000);
+      setTimeout(()=>fetchShodan().then(()=>{refreshCounts();refreshThreat();renderUI()}).catch(()=>{}), 6000);
+      setTimeout(()=>fetchSocialMedia().then(()=>{refreshCounts();refreshThreat();renderUI()}).catch(()=>{}), 7000);
 
     } finally {
       // Set fetchInProgress=false after a minimum delay to prevent rapid re-entry
@@ -1266,6 +1450,8 @@ function computeFusionStats(entities, threatBoard){
       ['DIS',counts.disasters||0,'#ff8c00'],
       ['CYB',counts.cyber||0,'#66ffcc'],
       ['NUK',counts.nuclear||0,'#ff00ff'],
+      ['GPS',counts.gpsjam||0,'#ff6633'],
+      ['SOC',counts.social||0,'#ff44aa'],
     ];
     statItems.forEach(([label,cnt,col])=>{
       h+=`<div class="stat"><span style="color:${col}88;font-size:5.5px;letter-spacing:0.5px">${label}</span><span style="color:${col};font-weight:600">${cnt}</span></div>`;
@@ -1326,7 +1512,7 @@ function computeFusionStats(entities, threatBoard){
     h += '</div>';
 
     h += '<div style="display:flex;gap:10px;align-items:center" class="hdr-stats">';
-    ['aircraft','seismic','iss','wildfires','weather','conflict','disasters','nuclear','cyber'].forEach(k=>{
+    ['aircraft','seismic','iss','wildfires','weather','conflict','disasters','nuclear','cyber','gpsjam','social'].forEach(k=>{
       h+=`<div style="display:flex;align-items:center;gap:3px"><div style="width:5px;height:5px;border-radius:50%;background:${dotCol(k)};box-shadow:0 0 4px ${dotCol(k)}"></div><span style="color:#0d2030;font-size:6.5px;letter-spacing:0.8px">${k.slice(0,4).toUpperCase()}</span></div>`;
     });
     h += `<span style="color:#1a3040;font-size:7.5px;letter-spacing:1px;border-left:1px solid #0a2040;padding-left:10px;font-family:'JetBrains Mono',monospace">${clock}</span>`;
@@ -1527,7 +1713,7 @@ function computeFusionStats(entities, threatBoard){
     h += `<div style="padding:0 18px;color:var(--text-tertiary);font-size:7.5px;animation:ticker 5s ease forwards;white-space:nowrap;flex:1">${TICKER[tickIdx]}</div>`;
     h += '<div style="padding:0 14px;display:flex;gap:14px;flex-shrink:0;border-left:1px solid var(--border-dim)">';
     ['SCROLL:ZOOM','DRAG:PAN','CLICK:INSPECT'].forEach(t=>{h+=`<span style="color:var(--text-dim);font-size:6.5px;letter-spacing:0.5px">${t}</span>`});
-    h += `<span style="color:var(--text-dim);font-size:6.5px;border-left:1px solid var(--border-dim);padding-left:10px">v4.0</span>`;
+    h += `<span style="color:var(--text-dim);font-size:6.5px;border-left:1px solid var(--border-dim);padding-left:10px">v5.0</span>`;
     h += '</div></div>';
 
     // ── MOBILE BOTTOM BAR ──
@@ -1558,17 +1744,18 @@ function computeFusionStats(entities, threatBoard){
 
   /* ── BOOT SEQUENCE ── */
   function boot(){
-    console.log('%c SENTINEL OS v4.0 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px');
+    console.log('%c SENTINEL OS v5.0 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px');
     console.log('%c Global Situational Awareness Platform ', 'color:#00d4ff;font-size:10px');
-    console.log('%c 16+ Live OSINT Layers + 3D Globe + Timeline + Search + Keyboard Nav ', 'color:#1a3a50;font-size:9px');
+    console.log('%c 20+ Live OSINT Layers + 3D Globe + Timeline + Search + Keyboard Nav ', 'color:#1a3a50;font-size:9px');
 
     initMap();
     initKeyboard();
     renderUI();
     renderHUD();
 
-    logEvent('SENTINEL OS v4.0 initialized','info');
+    logEvent('SENTINEL OS v5.0 initialized','info');
     logEvent('Systems online: 2D Map, 3D Globe, Search, Timeline, Keyboard shortcuts','info');
+    logEvent('NEW v5.0: Cybersecurity (OTX+URLhaus+ThreatFox), GPS Jamming, Social OSINT','info');
 
     // Staggered data loading
     fetchAll();

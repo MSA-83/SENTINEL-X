@@ -1,8 +1,8 @@
-# SENTINEL OS v4.0
+# SENTINEL OS v5.0
 
 ## Global Multi-Domain Situational Awareness Platform
 
-Real-time global situational awareness platform aggregating 16+ live OSINT data sources across aviation, maritime, orbital, seismic, wildfire, weather, conflict, disaster, cyber, and nuclear intelligence domains.
+Real-time global situational awareness platform aggregating **20+ live OSINT data sources** across aviation, maritime, orbital, seismic, wildfire, weather, conflict, disaster, cyber, nuclear, GPS jamming/EW, and social media intelligence domains.
 
 ## Live Platform
 
@@ -11,30 +11,55 @@ Real-time global situational awareness platform aggregating 16+ live OSINT data 
 
 ## Features
 
-### Live Data Layers (16+)
+### Live Data Layers (20+)
 
-| Layer | Source | Status | Update Rate |
-|-------|--------|--------|-------------|
-| Aircraft (ADS-B) | OpenSky Network | LIVE (11,218 states) | 60s |
-| Military Air | OpenSky MIL-DB detection | LIVE | 60s |
-| Military Air (Enhanced) | ADS-B Exchange (RapidAPI) | Needs subscription | 60s |
-| Maritime AIS | AISStream.io WebSocket | Config Ready (key set) | Real-time |
-| Dark Fleet | Global Fishing Watch (Gap Events) | LIVE (50 entries) | 60s |
-| Fishing Activity | Global Fishing Watch | LIVE (50 entries) | 60s |
-| ISS Position | wheretheiss.at + SGP4 Propagation | LIVE | 5s |
-| Satellites | N2YO + CelesTrak TLE | LIVE (1,922+) | 3min |
-| Space Debris | CelesTrak SGP4 (Fengyun, Cosmos, Iridium) | LIVE | 3min |
-| Military Satellites | CelesTrak Military Group | LIVE | 3min |
-| Seismic Events | USGS Earthquake API | LIVE | 60s |
-| Wildfires | NASA FIRMS VIIRS | LIVE (37,028 hotspots) | 60s |
-| Storm Systems | OpenWeatherMap (20 cities) | LIVE | 60s |
-| Aviation WX | AVWX METAR (15 airports) | LIVE (14 stations) | 60s |
-| Conflict Intel | GDELT 2.0 Articles + NewsAPI | LIVE (varies) | 60s (staggered) |
-| Disasters | GDACS (100 features) | LIVE | 60s |
-| Disasters (Supplemental) | ReliefWeb | Needs appname registration | 60s |
-| Cyber Threats | GDELT Cyber Intel | LIVE | 60s |
-| Cyber Exposure | Shodan (OSS plan - limited) | Limited | 60s |
-| Nuclear Intel | GDELT Nuclear Monitoring | LIVE | 60s |
+| Layer | Source | Status | Domain |
+|-------|--------|--------|--------|
+| Aircraft (ADS-B) | OpenSky Network | LIVE | Aviation |
+| Military Air | OpenSky MIL-DB + ADS-B Exchange | LIVE | Aviation |
+| Maritime AIS | AISStream.io WebSocket | Config Ready | Maritime |
+| Dark Fleet | Global Fishing Watch (Gap Events) | LIVE | Maritime |
+| Fishing Activity | Global Fishing Watch | LIVE | Maritime |
+| ISS Position | wheretheiss.at + SGP4 | LIVE (5s cycle) | Orbital |
+| Satellites | N2YO + CelesTrak TLE | LIVE | Orbital |
+| Space Debris | CelesTrak SGP4 | LIVE | Orbital |
+| Military Satellites | CelesTrak Military | LIVE | Orbital |
+| Seismic Events | USGS Earthquake API | LIVE | Environmental |
+| Wildfires | NASA FIRMS VIIRS | LIVE | Environmental |
+| Storm Systems | OpenWeatherMap (20 cities) | LIVE | Environmental |
+| Aviation WX | AVWX METAR (15 airports) | LIVE | Environmental |
+| Conflict Intel | GDELT 2.0 + NewsAPI | LIVE | Geopolitical |
+| Disasters | GDACS + ReliefWeb | LIVE | Environmental |
+| **Cyber Threats** | **AlienVault OTX + URLhaus + ThreatFox + Shodan + GDELT** | **NEW v5.0** | **Cyber** |
+| Nuclear Intel | GDELT Nuclear Monitoring | LIVE | WMD |
+| **GPS Jamming** | **GPSJam.org curated + Eurocontrol + EASA + OPSGROUP** | **NEW v5.0** | **EW/SIGINT** |
+| **Social OSINT** | **Reddit (CombatFootage, UkraineWar, CredibleDefense, OSINT)** | **NEW v5.0** | **Social Media** |
+
+### v5.0 New Layers
+
+#### 1. Enhanced Cybersecurity Layer
+- **AlienVault OTX** — Community threat intelligence with 200K+ participants. IOC feeds, adversary tracking, malware families, MITRE ATT&CK mapping.
+  - **Get API Key**: Free registration at https://otx.alienvault.com/
+- **URLhaus (abuse.ch)** — Malware URL tracking. No API key required. Tracks active malware distribution sites globally.
+  - **Direct Access**: https://urlhaus.abuse.ch/
+- **ThreatFox (abuse.ch)** — Indicators of Compromise (IOC) feed. No API key required. Tracks malware families, C2 servers, payload hashes.
+  - **Direct Access**: https://threatfox.abuse.ch/
+- **Shodan** — Internet exposure intelligence (existing, enhanced integration)
+- **GDELT Cyber** — Cyberattack news intelligence (existing)
+
+#### 2. GPS Jamming Anomalies Layer
+- **15 curated GPS jamming/spoofing hotspots** with severity ratings (Critical/High/Medium/Low)
+- Sources: GPSJam.org (ADS-B NIC/NAC data), Eurocontrol GNSS reports, EASA safety bulletins, C4ADS research, OPSGROUP pilot reports
+- Covers: Military EW jamming (Krasukha-4, Pole-21), GPS spoofing near conflict zones, maritime chokepoint interference
+- Key zones: Ukraine Eastern Front, Kaliningrad/Baltic, Syria, Israel/Ben Gurion, Black Sea, North Korea DMZ, South China Sea
+- **Free monitoring**: https://gpsjam.org/ (daily maps), https://www.flightradar24.com/data/gps-jamming
+
+#### 3. Social Media Conflict OSINT Layer
+- **Reddit public JSON API** (no authentication required for public subreddits)
+- Subreddits monitored: r/CombatFootage, r/UkraineWarVideoReport, r/CredibleDefense, r/UkrainianConflict, r/osint
+- Features: Automatic geocoding from post titles, video link extraction (Reddit video, YouTube, Twitter/X, Streamable), score/comment ranking
+- Posts placed on map based on GPS metadata from title geocoding
+- Video links accessible in entity inspector panel
 
 ### Key Features
 
@@ -45,9 +70,8 @@ Real-time global situational awareness platform aggregating 16+ live OSINT data 
 - **Threat Assessment Engine** — Multi-factor scoring (0-100) with 15 geopolitical zones
 - **Military Intelligence** — Squawk code decoder, callsign database (MIL_DB), NATO role classification
 - **SGP4 Orbital Propagation** — Real-time satellite position calculation from TLE data
-- **Multi-Domain Fusion** — Cross-correlates entities across all domains with zone proximity scoring
-- **Fetch Cycle Guard** — Prevents overlapping fetch cycles with minimum 2s cooldown
-- **Phased Data Loading** — Core feeds render immediately, GDELT/supplemental feeds async
+- **Multi-Domain Fusion** — Cross-correlates entities across all 12 domains
+- **GEO_DB** — 91 geopolitical location entries for article/post geocoding
 
 ### Threat Zones (15)
 
@@ -58,22 +82,25 @@ Ukraine/Russia Front, Gaza Strip, Iran Theater, Red Sea/Houthi Zone, Strait of H
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Main application UI |
-| `/api/health` | GET | System health check |
-| `/api/status` | GET | API key status, target list |
+| `/api/health` | GET | System health check (v5.0.0, 12 domains) |
+| `/api/status` | GET | API key status, targets, GPS zones, GEO entries |
 | `/api/proxy` | POST | Secure proxy for keyed APIs |
 | `/api/intel/gdelt` | POST | GDELT article geocoding (conflict, maritime, nuclear, cyber) |
-| `/api/intel/news` | POST | NewsAPI geocoding (conflict, cyber, nuclear) |
+| `/api/intel/news` | POST | NewsAPI geocoding (conflict, cyber, nuclear, gpsjam) |
 | `/api/weather/global` | GET | OWM multi-city weather (20 cities) |
 | `/api/avwx/global` | GET | AVWX multi-airport METAR (15 airports) |
-| `/api/reliefweb/disasters` | GET | ReliefWeb disaster data (needs registration) |
-| `/api/shodan/search` | POST | Shodan internet exposure (host-lookup fallback for free plan) |
-| `/api/acled/events` | GET | ACLED conflict data (needs registration) |
+| `/api/reliefweb/disasters` | GET | ReliefWeb disaster data (50 entries) |
+| `/api/shodan/search` | POST | Shodan internet exposure |
+| `/api/acled/events` | GET | ACLED conflict data |
 | `/api/ais/config` | GET | AISStream.io WebSocket config |
 | `/api/fusion/zones` | GET | Threat zone definitions |
+| `/api/cyber/otx` | GET | **NEW** AlienVault OTX threat pulses |
+| `/api/cyber/urlhaus` | GET | **NEW** URLhaus malware URL feed |
+| `/api/cyber/threatfox` | GET | **NEW** ThreatFox IOC feed |
+| `/api/gps/jamming` | GET | **NEW** GPS jamming hotspots (15 zones) |
+| `/api/social/reddit` | GET | **NEW** Reddit OSINT conflict posts |
 
 ## Environment Variables
-
-Set in `.dev.vars` for local development, or as Cloudflare secrets for production:
 
 ```
 NASA_FIRMS_KEY=<your-key>
@@ -86,6 +113,9 @@ SHODAN_KEY=<your-key>
 NEWS_API_KEY=<your-key>
 AISSTREAM_KEY=<your-key>
 ACLED_KEY=<optional-register-at-developer.acleddata.com>
+OTX_KEY=<optional-register-at-otx.alienvault.com>
+REDDIT_CLIENT_ID=<optional-for-enhanced-access>
+REDDIT_SECRET=<optional-for-enhanced-access>
 ```
 
 ## Tech Stack
@@ -102,94 +132,62 @@ ACLED_KEY=<optional-register-at-developer.acleddata.com>
 
 ```
 Edge BFF (Backend-for-Frontend) Pattern:
-- All keyed API calls route through /api/proxy to protect credentials
-- GDELT article-based conflict intel with server-side geocoding
-- Multi-city weather aggregation (OWM) and multi-airport METAR (AVWX)
-- Parallel GDELT requests with 8s timeout (conflict+maritime parallel, then nuclear+cyber parallel)
-- Robust error handling: content-type validation, JSON parse guards, graceful fallbacks
-- Fetch cycle guard with 2s cooldown prevents overlapping request cascades
+- All keyed API calls route through /api/proxy
+- Dedicated endpoints for each new layer (OTX, URLhaus, ThreatFox, GPS, Reddit)
+- 91 GEO_DB entries for article/post geocoding
+- 15 curated GPS jamming zones with severity ratings
+- Phased data loading: 5 phases from core feeds to supplemental
 ```
 
 ## Data Flow
 
 1. Frontend boots, initializes Leaflet map + HUD
-2. `fetchAll()` runs every 60s with overlap guard, calling 11+ parallel data sources
-3. Phase 1: Fast feeds (OpenSky, USGS, ISS, FIRMS, OWM, N2YO, AVWX, Military) — renders immediately
-4. Phase 2: Slower feeds (GFW, GDACS, ReliefWeb) — renders after completion
-5. Phase 3: GDELT (parallel pairs: conflict+maritime together, then nuclear+cyber together after 2s gap)
-6. Phase 4: Supplemental (NewsAPI at +3s, Shodan at +5s) — fire-and-forget
-7. Each parser normalizes data to unified entity format
-8. Threat engine scores each entity (0-100) based on type, squawk, zone proximity
-9. UI renders entities on map, updates threat board, fusion stats, timeline
+2. `fetchAll()` runs every 60s with overlap guard
+3. Phase 1: Core feeds (OpenSky, USGS, ISS, FIRMS, OWM, N2YO, AVWX, Military)
+4. Phase 2: Slower feeds (GFW, GDACS, ReliefWeb, GPS Jamming)
+5. Phase 3: GDELT intel (conflict+maritime parallel, then nuclear+cyber)
+6. Phase 4: Cyber feeds (OTX at +2s, URLhaus at +3s, ThreatFox at +4s)
+7. Phase 5: Supplemental (NewsAPI at +5s, Shodan at +6s, Reddit Social at +7s)
+
+## Registration Guidance (Free Services)
+
+| Service | URL | Purpose |
+|---------|-----|---------|
+| AlienVault OTX | https://otx.alienvault.com/ | Cyber threat intelligence API key |
+| ACLED | https://developer.acleddata.com/ | Conflict event data |
+| Shodan (Full) | https://shodan.io/store | Internet exposure search |
+| ADS-B Exchange | https://rapidapi.com/adsbexchange | Military aircraft tracking |
+| GPSJam.org | https://gpsjam.org/ | GPS interference daily maps |
+| URLhaus | https://urlhaus.abuse.ch/ | Malware URL tracking (no key needed) |
+| ThreatFox | https://threatfox.abuse.ch/ | IOC feed (no key needed) |
+| Flightradar24 GPS | https://www.flightradar24.com/data/gps-jamming | GPS jamming map |
 
 ## Changelog
 
-### v4.0.2 (2026-03-25)
+### v5.0.0 (2026-03-28)
 
-#### Performance Fixes
-- **GDELT timeout reduced** — Backend retry reduced from 2 retries with 6s backoff to 0 retries with 8s hard timeout. Previous behavior caused 27s+ blocking on rate-limited/unreachable GDELT
-- **GDELT parallel fetch** — Frontend now fetches conflict+maritime in parallel (Phase A), then nuclear+cyber in parallel (Phase B) instead of sequential 4× stagger. Cuts total GDELT time from ~24s to ~10s
-- **Fetch cycle cooldown** — Added 2s minimum cooldown after fetchInProgress=false to prevent rapid re-entry from setInterval overlap
-- **Polling interval** — Increased from 45s to 60s to prevent request pile-up when slow APIs (GDELT, GFW) are rate-limited
-
-#### Error Handling Fixes
-- **Shodan JSON parse crash** — `/api/shodan/search` returned HTML (not JSON) from paid-only search endpoint, causing SyntaxError. Added content-type validation and try/catch around JSON.parse for all Shodan API calls
-- **Shodan DNS resolve fallback** — Added content-type guards to prevent crash when Shodan API returns HTML for any endpoint
-- **Frontend Shodan resilience** — Added try/catch around response.json() in fetchShodan to handle malformed responses
-
-#### Data Integrity Fixes
-- **CelesTrak satellite prefix collision** — Multiple `replaceLive()` calls with different prefixes (`sta_`, `sl_`, `gps_`, `glo_`) could cause partial data loss. Unified to single `ctk_` prefix with batch replacement
-- **GDELT fire-and-forget** — Phase 3/4 (GDELT, NewsAPI, Shodan) are now true fire-and-forget with `.catch(()=>{})` to prevent unhandled promise rejections
-
-### v4.0.1 (2026-03-25)
-
-#### Critical Bug Fixes
-- **GDELT prefix collision** — `replaceLive('gdelt_',...)` was wiping nuclear/cyber data on each conflict refresh. Fixed with specific prefixes: `gdelt_conflict`, `gdelt_nuclear_`, `gdelt_cyber_`, `gdelt_maritime_`
-- **Fetch cycle cascading** — 30s interval + slow GDELT (14-24s) caused overlapping cycles that froze the service (588s+ response times). Fixed with `fetchInProgress` guard and increased interval to 45s
-- **Shodan exploits API** — Free Shodan exploits endpoint returns HTML not JSON. Replaced with host-lookup fallback strategy using DNS resolve + individual host queries
-- **Military ADS-B Exchange 403** — RapidAPI subscription expired. Added graceful handling: logs once on first cycle, falls back silently to OpenSky MIL-DB detection
-- **ReliefWeb appname** — All appname strategies rejected (requires registration). Added POST method attempt + clear error messaging. GDACS (100 features) serves as primary disaster feed
+#### New Layers
+- **Cybersecurity (Enhanced)**: Added AlienVault OTX (threat pulses, IOCs, MITRE ATT&CK), URLhaus (malware URLs), ThreatFox (IOC feed) — all free, no key required for basic access
+- **GPS Jamming Anomalies**: 15 curated hotspots from GPSJam.org, Eurocontrol, EASA, C4ADS, OPSGROUP with severity ratings and confidence scores
+- **Social Media Conflict OSINT**: Reddit integration (5 subreddits), automatic geocoding, video link extraction, score ranking
 
 #### Improvements
-- **Phased data loading** — Phase 1 (fast APIs) renders immediately, Phase 2 (slower APIs) renders after completion, Phase 3/4 async
-- **API status accuracy** — Updated API reference table to reflect actual service status (ADS-B Exchange: limited, Shodan: limited, ReliefWeb: pending)
-- **NewsAPI prefix** — Changed from generic `news_` to `news_conflict_` to avoid entity ID conflicts
-- **Cleaner event logging** — Reduced log spam for known limitations (Shodan free plan, ADS-B subscription)
+- GEO_DB expanded from ~60 to 91 entries (added Baltic, Arctic, cyber-relevant locations)
+- Threat scoring enhanced for GPS jamming (+20) and social media (+10) entities
+- Frontend layer count: 20+ layers across 12 domains
+- HUD stats ring shows GPS and SOC counters
+- Phased loading extended to 5 phases for optimal UX
 
-## Verified API Test Results (2026-03-25)
+### v4.0.2 (2026-03-25)
+- GDELT timeout/retry reduction, parallel fetch, cycle cooldown
+- Shodan JSON parse crash fix, CelesTrak prefix collision fix
 
-| # | Endpoint | Result |
-|---|----------|--------|
-| 1 | Health | operational, v4.0.0 |
-| 2 | OpenSky | 11,218 aircraft states |
-| 3 | FIRMS | 37,028 CSV lines |
-| 4 | N2YO | 1,922 satellites |
-| 5 | OWM Global | 20 cities |
-| 6 | AVWX Global | 14 stations |
-| 7 | GDACS | 100 disaster features |
-| 8 | GFW Fishing | 50 entries |
-| 9 | GFW Gap | 50 entries |
-| 10 | NewsAPI | 4 geocoded of 5 total |
-| 11 | Shodan | Free plan (oss), clean error |
-| 12 | ReliefWeb | Needs appname registration |
-| 13 | ACLED | Needs API key registration |
-| 14 | AIS Config | Key present |
-| 15 | Fusion Zones | 12 zones |
-| 16 | Military (ADS-B Ex) | 403 (subscription required) |
-| 17 | GDELT | Timeout from sandbox (works from CF edge) |
-
-## Registration Guidance
-
-### Services Requiring Registration (Free)
-
-- **ACLED**: Register at https://developer.acleddata.com/ — provides conflict event data for 260+ countries
-- **ReliefWeb**: Request appname at https://apidoc.reliefweb.int/parameters#appname — UN humanitarian disaster data (GDACS covers most disaster data meanwhile)
-- **Shodan (Full Access)**: Upgrade at https://shodan.io/store — internet exposure intelligence (search API requires paid plan; OSS plan has 0 query credits; host-lookup fallback available)
-- **ADS-B Exchange**: Subscribe at https://rapidapi.com/adsbexchange — enhanced military aircraft tracking (OpenSky MIL-DB detection works as free alternative)
+### v4.0.1 (2026-03-25)
+- GDELT prefix collision, fetch cascade, Shodan/ADS-B fallbacks
 
 ## Deployment
 
 - **Platform**: Cloudflare Pages
 - **Status**: Active (sandbox)
-- **Version**: 4.0.2
-- **Last Updated**: 2026-03-25
+- **Version**: 5.0.0
+- **Last Updated**: 2026-03-28

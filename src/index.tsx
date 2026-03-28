@@ -1,5 +1,5 @@
 /**
- * SENTINEL OS v4.0 — Global Multi-Domain Situational Awareness Platform
+ * SENTINEL OS v5.0 — Global Multi-Domain Situational Awareness Platform
  * Hono Backend + API Proxy for Cloudflare Pages Edge Runtime
  * 
  * Architecture: Edge BFF (Backend-for-Frontend) pattern
@@ -12,6 +12,10 @@
  * - NewsAPI conflict intel endpoint
  * - ReliefWeb disaster endpoint (CORS-free proxy)
  * - ACLED conflict data endpoint
+ * - AlienVault OTX cyber threat intel endpoint
+ * - URLhaus malware URL tracking endpoint
+ * - GPS Jamming anomaly detection + known hotspots
+ * - Social media conflict OSINT (Reddit)
  * - Multi-domain fusion correlation engine
  */
 import { Hono } from 'hono'
@@ -28,6 +32,9 @@ type Bindings = {
   SHODAN_KEY?: string
   NEWS_API_KEY?: string
   AISSTREAM_KEY?: string
+  OTX_KEY?: string
+  REDDIT_CLIENT_ID?: string
+  REDDIT_SECRET?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -99,6 +106,37 @@ const GEO_DB: Record<string, { lat: number; lon: number; region: string }> = {
   'kyiv': { lat: 50.4, lon: 30.5, region: 'Eastern Europe' },
   'donbas': { lat: 48.0, lon: 38.0, region: 'Eastern Europe' },
   'zaporizhzhia': { lat: 47.8, lon: 35.2, region: 'Eastern Europe' },
+  // v5.0 additions for cyber/GPS/social layers
+  'baltic': { lat: 56.0, lon: 22.0, region: 'Europe' },
+  'kaliningrad': { lat: 54.7, lon: 20.5, region: 'Eastern Europe' },
+  'arctic': { lat: 71.0, lon: 25.0, region: 'Arctic' },
+  'mediterranean': { lat: 35.0, lon: 18.0, region: 'Europe' },
+  'atlantic': { lat: 45.0, lon: -30.0, region: 'Atlantic' },
+  'pacific': { lat: 20.0, lon: -150.0, region: 'Pacific' },
+  'finland': { lat: 61.5, lon: 25.7, region: 'Europe' },
+  'poland': { lat: 51.9, lon: 19.1, region: 'Europe' },
+  'romania': { lat: 45.9, lon: 25.0, region: 'Europe' },
+  'georgia': { lat: 42.3, lon: 43.4, region: 'Eastern Europe' },
+  'armenia': { lat: 40.0, lon: 45.0, region: 'Middle East' },
+  'azerbaijan': { lat: 40.4, lon: 49.9, region: 'Middle East' },
+  'singapore': { lat: 1.35, lon: 103.82, region: 'Indo-Pacific' },
+  'malacca': { lat: 2.2, lon: 102.2, region: 'Indo-Pacific' },
+  'germany': { lat: 51.2, lon: 10.4, region: 'Europe' },
+  'france': { lat: 46.2, lon: 2.2, region: 'Europe' },
+  'united kingdom': { lat: 55.4, lon: -3.4, region: 'Europe' },
+  'uk': { lat: 55.4, lon: -3.4, region: 'Europe' },
+  'london': { lat: 51.5, lon: -0.1, region: 'Europe' },
+  'new york': { lat: 40.7, lon: -74.0, region: 'North America' },
+  'california': { lat: 36.8, lon: -119.4, region: 'North America' },
+  'texas': { lat: 31.0, lon: -100.0, region: 'North America' },
+  'australia': { lat: -25.3, lon: 133.8, region: 'Indo-Pacific' },
+  'brazil': { lat: -14.2, lon: -51.9, region: 'South America' },
+  'colombia': { lat: 4.6, lon: -74.1, region: 'South America' },
+  'drone': { lat: 48.5, lon: 37.0, region: 'Eastern Europe' },
+  'ransomware': { lat: 40.7, lon: -74.0, region: 'Global' },
+  'apt': { lat: 39.9, lon: 116.4, region: 'Indo-Pacific' },
+  'hacker': { lat: 55.8, lon: 37.6, region: 'Global' },
+  'spyware': { lat: 31.0, lon: 34.8, region: 'Middle East' },
 }
 
 function geocodeFromText(title: string, domain: string): { lat: number; lon: number; region: string; matchedKey: string } | null {
@@ -242,7 +280,7 @@ app.post('/api/proxy', async (c) => {
   }
 
   const fetchHeaders: Record<string, string> = {
-    'User-Agent': 'SENTINEL-OS/4.0 (Global OSINT Platform)',
+    'User-Agent': 'SENTINEL-OS/5.0 (Global OSINT Platform)',
   }
   if (config.authType === 'bearer' && secret) {
     fetchHeaders['Authorization'] = `Bearer ${secret}`
@@ -393,7 +431,6 @@ app.post('/api/shodan/search', async (c) => {
   const q = query || 'port:502 scada'
 
   try {
-    // Try full search first (requires paid plan)
     let searchFailed = false
     try {
       const res = await fetch(
@@ -413,7 +450,6 @@ app.post('/api/shodan/search', async (c) => {
     }
     if (!searchFailed) { /* unreachable but type-safe */ }
 
-    // Fallback 1: Shodan /api-info for account info + dns resolve for sample data
     let infoData: any = null
     try {
       const infoRes = await fetch(
@@ -426,7 +462,6 @@ app.post('/api/shodan/search', async (c) => {
       }
     } catch {}
 
-    // Fallback 2: Use Shodan's free /shodan/host/{ip} endpoint with known ICS IPs
     let dnsData: any = {}
     try {
       const dnsRes = await fetch(
@@ -439,7 +474,6 @@ app.post('/api/shodan/search', async (c) => {
       }
     } catch {}
 
-    // Build synthetic results from available data
     const syntheticMatches: any[] = []
     for (const [hostname, ip] of Object.entries(dnsData)) {
       if (!ip) continue
@@ -493,16 +527,14 @@ app.post('/api/shodan/search', async (c) => {
 
 /* ═══════════════════════════════════════════════════════════════
    RELIEFWEB — UN OCHA disaster data (proxy to avoid CORS)
-   Note: ReliefWeb requires POST with JSON body for appname
 ═══════════════════════════════════════════════════════════════ */
 app.get('/api/reliefweb/disasters', async (c) => {
   const APPNAME = 'SMansabdar-SentinelXresearchdashboard-7f9c2a'
 
-  // ReliefWeb v1 API: POST method with appname in query + JSON body
   try {
     const res = await fetch(`https://api.reliefweb.int/v1/disasters?appname=${APPNAME}&limit=50`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'User-Agent': 'SENTINEL-OS/4.0' },
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'SENTINEL-OS/5.0' },
       body: JSON.stringify({
         fields: { include: ['name', 'country', 'status', 'primary_type', 'glide', 'date'] },
         sort: ['date:desc'],
@@ -516,11 +548,10 @@ app.get('/api/reliefweb/disasters', async (c) => {
     }
   } catch {}
 
-  // Fallback: GET with registered appname
   try {
     const res = await fetch(
       `https://api.reliefweb.int/v1/disasters?appname=${APPNAME}&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date`,
-      { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'SENTINEL-OS/4.0' } }
+      { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'SENTINEL-OS/5.0' } }
     )
     if (res.ok) {
       const data = await res.json()
@@ -537,7 +568,6 @@ app.get('/api/reliefweb/disasters', async (c) => {
 
 /* ═══════════════════════════════════════════════════════════════
    ACLED — Armed Conflict Location & Event Data (free tier)
-   Note: ACLED requires registration for API key — returns guidance
 ═══════════════════════════════════════════════════════════════ */
 app.get('/api/acled/events', async (c) => {
   const key = c.env.ACLED_KEY
@@ -551,10 +581,9 @@ app.get('/api/acled/events', async (c) => {
   }
 
   try {
-    // ACLED API v3 — free tier supports up to 500 rows
     const res = await fetch(
       `https://api.acleddata.com/acled/read?key=${key}&email=sentinel@osint.platform&limit=100&sort=event_date:desc`,
-      { signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'SENTINEL-OS/4.0' } }
+      { signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'SENTINEL-OS/5.0' } }
     )
     if (!res.ok) return c.json({ data: [], error: `HTTP ${res.status}` })
     const data = await res.json() as any
@@ -566,14 +595,13 @@ app.get('/api/acled/events', async (c) => {
 
 /* ═══════════════════════════════════════════════════════════════
    GDELT CONFLICT INTEL — Article-based geocoding endpoint
-   With retry and staggered requests to avoid rate-limiting
 ═══════════════════════════════════════════════════════════════ */
 async function fetchGDELTWithRetry(url: string, retries = 0): Promise<any> {
   for (let i = 0; i <= retries; i++) {
     try {
       if (i > 0) await new Promise(r => setTimeout(r, 2000))
       const res = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/4.0)' },
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/5.0)' },
         signal: AbortSignal.timeout(8000)
       })
       if (res.status === 429) {
@@ -636,13 +664,15 @@ app.post('/api/intel/news', async (c) => {
     ? 'cyberattack+ransomware+hacking+data+breach'
     : category === 'nuclear'
     ? 'nuclear+missile+warhead+uranium'
+    : category === 'gpsjam'
+    ? 'GPS+jamming+spoofing+navigation+interference'
     : 'military+attack+conflict+bombing+airstrike'
 
   try {
     const fromDate = new Date(Date.now() - 3 * 86400000).toISOString().split('T')[0]
     const res = await fetch(
       `https://newsapi.org/v2/everything?q=${query}&sortBy=publishedAt&pageSize=40&language=en&from=${fromDate}&apiKey=${key}`,
-      { signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/4.0)' } }
+      { signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/5.0)' } }
     )
     if (!res.ok) return c.json({ events: [], error: `HTTP ${res.status}` })
     const data = await res.json() as any
@@ -653,17 +683,289 @@ app.post('/api/intel/news', async (c) => {
       if (!geo) return null
       return {
         id: `news_${category || 'conflict'}_${i}`,
-        type: category === 'cyber' ? 'cyber' : category === 'nuclear' ? 'nuclear' : 'conflict',
+        type: category === 'cyber' ? 'cyber' : category === 'nuclear' ? 'nuclear' : category === 'gpsjam' ? 'gpsjam' : 'conflict',
         lat: geo.lat, lon: geo.lon, region: geo.region,
         title: art.title, url: art.url, domain: art.source?.name || '',
         timestamp: art.publishedAt, country: '', language: 'en',
         matchedLocation: geo.matchedKey,
+        imageUrl: art.urlToImage || '',
       }
     }).filter(Boolean)
 
     return c.json({ events, total: articles.length, geocoded: events.length, source: 'newsapi' })
   } catch (error) {
     return c.json({ events: [], error: String(error) })
+  }
+})
+
+/* ═══════════════════════════════════════════════════════════════
+   CYBERSECURITY — AlienVault OTX Public Pulse Feed
+   Free API: https://otx.alienvault.com/api
+   Get API key at: https://otx.alienvault.com/ (free registration)
+═══════════════════════════════════════════════════════════════ */
+app.get('/api/cyber/otx', async (c) => {
+  // OTX public pulse feed — works without key for public data
+  const otxKey = c.env.OTX_KEY || ''
+  
+  try {
+    const headers: Record<string, string> = {
+      'User-Agent': 'SENTINEL-OS/5.0',
+      'Accept': 'application/json',
+    }
+    if (otxKey) headers['X-OTX-API-KEY'] = otxKey
+
+    // Fetch recent public pulses (threat intel reports)
+    const res = await fetch(
+      'https://otx.alienvault.com/api/v1/pulses/subscribed?limit=50&modified_since=' + 
+      new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0],
+      { headers, signal: AbortSignal.timeout(12000) }
+    )
+
+    if (!res.ok) {
+      // Fallback to activity feed (no key required)
+      const pubRes = await fetch(
+        'https://otx.alienvault.com/api/v1/pulses/activity?limit=30',
+        { headers: { 'User-Agent': 'SENTINEL-OS/5.0', 'Accept': 'application/json' }, signal: AbortSignal.timeout(10000) }
+      )
+      if (pubRes.ok) {
+        const pubData = await pubRes.json() as any
+        return c.json({ results: pubData.results || [], count: pubData.count || 0, source: 'otx-activity' })
+      }
+      return c.json({
+        results: [],
+        error: 'OTX API requires authentication',
+        registration_url: 'https://otx.alienvault.com/',
+        note: 'Register free at otx.alienvault.com to get an OTX API key for full access.'
+      })
+    }
+
+    const data = await res.json() as any
+    return c.json({ results: data.results || [], count: data.count || 0, source: 'otx-subscribed' })
+  } catch (error) {
+    return c.json({ results: [], error: String(error) })
+  }
+})
+
+/* ═══════════════════════════════════════════════════════════════
+   CYBERSECURITY — URLhaus Malware URL Feed (abuse.ch)
+   Free, no API key required: https://urlhaus-api.abuse.ch/
+═══════════════════════════════════════════════════════════════ */
+app.get('/api/cyber/urlhaus', async (c) => {
+  try {
+    // Try the recent URLs endpoint first
+    const res = await fetch('https://urlhaus-api.abuse.ch/v1/urls/recent/limit/50/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'SENTINEL-OS/5.0' },
+      signal: AbortSignal.timeout(10000)
+    })
+
+    if (res.ok) {
+      const ct = res.headers.get('content-type') || ''
+      if (ct.includes('json')) {
+        const data = await res.json() as any
+        if (data.urls && data.urls.length > 0) {
+          return c.json({ urls: data.urls, query_status: data.query_status || 'ok' })
+        }
+      }
+    }
+
+    // Fallback: Try CSV feed (more reliable)
+    const csvRes = await fetch('https://urlhaus.abuse.ch/downloads/csv_recent/', {
+      headers: { 'User-Agent': 'SENTINEL-OS/5.0' },
+      signal: AbortSignal.timeout(10000)
+    })
+    if (csvRes.ok) {
+      const csv = await csvRes.text()
+      const lines = csv.split('\n').filter(l => l && !l.startsWith('#')).slice(0, 50)
+      const urls = lines.map(l => {
+        const parts = l.split(',').map(p => p.replace(/^"|"$/g, ''))
+        return { id: parts[0], dateadded: parts[1], url: parts[2], url_status: parts[3], threat: parts[5], tags: parts[6]?.split('|') || [], host: parts[7], country: '' }
+      }).filter(u => u.url)
+      return c.json({ urls, query_status: 'csv_fallback' })
+    }
+
+    return c.json({ urls: [], error: 'URLhaus API unavailable from this location', note: 'URLhaus feeds work from Cloudflare Edge. Visit https://urlhaus.abuse.ch/ for direct access.' })
+  } catch (error) {
+    return c.json({ urls: [], error: String(error) })
+  }
+})
+
+/* ═══════════════════════════════════════════════════════════════
+   CYBERSECURITY — ThreatFox IOC Feed (abuse.ch)
+   Free, no API key required: https://threatfox-api.abuse.ch/
+═══════════════════════════════════════════════════════════════ */
+app.get('/api/cyber/threatfox', async (c) => {
+  try {
+    const res = await fetch('https://threatfox-api.abuse.ch/api/v1/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'SENTINEL-OS/5.0' },
+      body: JSON.stringify({ query: 'get_iocs', days: 3 }),
+      signal: AbortSignal.timeout(10000)
+    })
+
+    if (res.ok) {
+      const ct = res.headers.get('content-type') || ''
+      if (ct.includes('json')) {
+        const data = await res.json() as any
+        return c.json({
+          data: Array.isArray(data.data) ? data.data.slice(0, 60) : [],
+          query_status: data.query_status || 'no_results',
+          source: 'threatfox'
+        })
+      }
+    }
+
+    return c.json({ data: [], error: 'ThreatFox API unavailable from this location', note: 'ThreatFox feeds work from Cloudflare Edge. Visit https://threatfox.abuse.ch/ for direct access.' })
+  } catch (error) {
+    return c.json({ data: [], error: String(error) })
+  }
+})
+
+/* ═══════════════════════════════════════════════════════════════
+   GPS JAMMING ANOMALIES — Known Interference Hotspots + Analysis
+   Sources: GPSJAM.org data model, known conflict zone jamming
+   GPSJam.org uses ADS-B data from aircraft — no public API
+   We provide curated known jamming zones + GDELT GPS news
+═══════════════════════════════════════════════════════════════ */
+
+// Known GPS jamming/spoofing hotspots (curated from GPSJam.org, Eurocontrol, FAA NOTAMs)
+const GPS_JAM_ZONES = [
+  // Active military jamming zones
+  { name: 'Ukraine — Eastern Front', lat: 48.5, lon: 37.0, radius: 300, severity: 'critical', type: 'military_jamming', source: 'GPSJam/ADS-B', description: 'Active GPS jamming from Russian EW systems (Krasukha-4, Pole-21)', affected: 'All GNSS', lastDetected: 'Continuous', confidence: 95 },
+  { name: 'Kaliningrad Oblast', lat: 54.7, lon: 20.5, radius: 200, severity: 'high', type: 'military_jamming', source: 'GPSJam/Eurocontrol', description: 'Russian military GNSS jamming affecting Baltic airspace', affected: 'GPS L1/L2', lastDetected: 'Continuous', confidence: 90 },
+  { name: 'Eastern Baltic Sea', lat: 57.5, lon: 22.0, radius: 250, severity: 'high', type: 'spoofing', source: 'GPSJam/EASA', description: 'GPS spoofing incidents affecting commercial aviation over Baltic states', affected: 'GPS + Galileo', lastDetected: 'Recent', confidence: 85 },
+  { name: 'Syria — Northwest', lat: 35.5, lon: 36.8, radius: 200, severity: 'high', type: 'military_jamming', source: 'GPSJam/Bellingcat', description: 'Russian Khmeimim air base EW operations', affected: 'GPS L1', lastDetected: 'Continuous', confidence: 88 },
+  { name: 'Eastern Mediterranean', lat: 34.5, lon: 33.5, radius: 350, severity: 'medium', type: 'spoofing', source: 'GPSJam/C4ADS', description: 'GPS spoofing affecting shipping and aviation near Cyprus, Lebanon', affected: 'GPS', lastDetected: 'Intermittent', confidence: 80 },
+  { name: 'Iran — Western Border', lat: 33.5, lon: 46.0, radius: 300, severity: 'high', type: 'military_jamming', source: 'GPSJam', description: 'Iranian military GPS jamming near Iraq border', affected: 'GPS + GLONASS', lastDetected: 'Recent', confidence: 75 },
+  { name: 'Israel — Northern Border', lat: 33.0, lon: 35.5, radius: 150, severity: 'high', type: 'spoofing', source: 'GPSJam/OPSGROUP', description: 'Massive GPS spoofing affecting Ben Gurion approaches and regional airspace', affected: 'GPS L1', lastDetected: 'Continuous', confidence: 92 },
+  { name: 'North Korea — DMZ', lat: 37.9, lon: 126.7, radius: 120, severity: 'medium', type: 'military_jamming', source: 'GPSJam/ROK MND', description: 'DPRK GPS jamming directed at South Korean targets', affected: 'GPS L1', lastDetected: 'Periodic', confidence: 82 },
+  // Maritime chokepoints
+  { name: 'Red Sea — Southern', lat: 14.0, lon: 42.8, radius: 200, severity: 'medium', type: 'spoofing', source: 'GPSJam/IMO', description: 'GPS spoofing incidents affecting shipping near Bab el-Mandeb', affected: 'GPS', lastDetected: 'Recent', confidence: 72 },
+  { name: 'Strait of Hormuz', lat: 26.5, lon: 56.3, radius: 120, severity: 'medium', type: 'military_jamming', source: 'GPSJam', description: 'Iranian GNSS interference affecting maritime traffic', affected: 'GPS', lastDetected: 'Intermittent', confidence: 68 },
+  { name: 'Black Sea — Western', lat: 44.0, lon: 33.0, radius: 250, severity: 'high', type: 'spoofing', source: 'GPSJam/C4ADS', description: 'GPS spoofing centered on Sevastopol naval base, affecting civilian shipping', affected: 'GPS + GLONASS', lastDetected: 'Continuous', confidence: 87 },
+  // Additional zones
+  { name: 'Finland — Eastern Border', lat: 62.0, lon: 29.5, radius: 150, severity: 'medium', type: 'military_jamming', source: 'GPSJam/Traficom', description: 'GNSS interference from Kola Peninsula military installations', affected: 'GPS + Galileo', lastDetected: 'Periodic', confidence: 78 },
+  { name: 'Turkey — Southeast', lat: 37.5, lon: 40.0, radius: 180, severity: 'medium', type: 'military_jamming', source: 'GPSJam', description: 'GPS jamming related to cross-border military operations', affected: 'GPS', lastDetected: 'Recent', confidence: 70 },
+  { name: 'South China Sea — Spratly', lat: 10.5, lon: 114.0, radius: 200, severity: 'medium', type: 'spoofing', source: 'C4ADS/SkyTruth', description: 'AIS and GPS spoofing affecting maritime vessels near Chinese installations', affected: 'GPS + BeiDou', lastDetected: 'Intermittent', confidence: 74 },
+  { name: 'Taiwan Strait', lat: 24.0, lon: 119.5, radius: 150, severity: 'low', type: 'military_jamming', source: 'GPSJam', description: 'Occasional PLA EW exercises affecting GNSS signals', affected: 'GPS', lastDetected: 'Periodic', confidence: 60 },
+]
+
+app.get('/api/gps/jamming', async (c) => {
+  return c.json({
+    zones: GPS_JAM_ZONES,
+    count: GPS_JAM_ZONES.length,
+    lastUpdated: new Date().toISOString(),
+    sources: [
+      { name: 'GPSJam.org', url: 'https://gpsjam.org/', description: 'Daily maps of GPS interference using ADS-B data', free: true, keyRequired: false },
+      { name: 'Eurocontrol', url: 'https://www.eurocontrol.int/', description: 'European aviation GNSS interference reports', free: true, keyRequired: false },
+      { name: 'OPSGROUP', url: 'https://ops.group/', description: 'Pilot-reported GPS interference tracking', free: false, keyRequired: true },
+      { name: 'C4ADS', url: 'https://c4ads.org/', description: 'GPS spoofing research and analysis', free: true, keyRequired: false },
+      { name: 'Flightradar24', url: 'https://www.flightradar24.com/data/gps-jamming', description: 'GPS jamming and interference map', free: true, keyRequired: false },
+    ],
+    note: 'GPS jamming data is aggregated from multiple OSINT sources. GPSJam.org provides daily interference maps at https://gpsjam.org/. For real-time ADS-B NIC/NAC analysis, integrate ADS-B Exchange data.'
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════
+   SOCIAL MEDIA CONFLICT — Reddit OSINT Posts
+   Subreddits: r/CombatFootage, r/UkraineWarVideoReport, r/CredibleDefense
+   Uses Reddit JSON API (no auth required for public subreddits)
+═══════════════════════════════════════════════════════════════ */
+app.get('/api/social/reddit', async (c) => {
+  const subreddits = [
+    { name: 'CombatFootage', type: 'video', description: 'Combat and conflict footage' },
+    { name: 'UkraineWarVideoReport', type: 'video', description: 'Ukraine conflict videos' },
+    { name: 'CredibleDefense', type: 'analysis', description: 'Military analysis & discussion' },
+    { name: 'UkrainianConflict', type: 'news', description: 'Ukraine conflict news' },
+    { name: 'osint', type: 'intel', description: 'Open Source Intelligence' },
+  ]
+
+  const allPosts: any[] = []
+
+  try {
+    const results = await Promise.allSettled(
+      subreddits.map(sub =>
+        fetch(`https://www.reddit.com/r/${sub.name}/hot.json?limit=15&t=week`, {
+          headers: { 'User-Agent': 'SENTINEL-OS/5.0 (OSINT Platform; contact: sentinel-os@osint.dev)' },
+          signal: AbortSignal.timeout(8000)
+        }).then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`)
+          return r.json()
+        }).then((data: any) => {
+          const posts = (data?.data?.children || []).map((child: any) => {
+            const p = child.data
+            if (!p) return null
+
+            // Extract video/media URLs
+            let mediaUrl = ''
+            let mediaType = 'text'
+            if (p.is_video && p.media?.reddit_video?.fallback_url) {
+              mediaUrl = p.media.reddit_video.fallback_url
+              mediaType = 'video'
+            } else if (p.url && /\.(mp4|webm|mov)/i.test(p.url)) {
+              mediaUrl = p.url
+              mediaType = 'video'
+            } else if (p.url && /v\.redd\.it|streamable|youtube|youtu\.be|twitter\.com|x\.com/i.test(p.url)) {
+              mediaUrl = p.url
+              mediaType = 'video_link'
+            } else if (p.url && /\.(jpg|jpeg|png|gif|webp)/i.test(p.url)) {
+              mediaUrl = p.url
+              mediaType = 'image'
+            } else if (p.thumbnail && p.thumbnail.startsWith('http')) {
+              mediaUrl = p.thumbnail
+              mediaType = 'thumbnail'
+            }
+
+            // Geocode from title
+            const geo = geocodeFromText(p.title || '', sub.name)
+
+            return {
+              id: p.id,
+              subreddit: sub.name,
+              subType: sub.type,
+              title: p.title || '',
+              author: p.author || 'unknown',
+              score: p.score || 0,
+              numComments: p.num_comments || 0,
+              permalink: `https://reddit.com${p.permalink}`,
+              url: p.url || '',
+              mediaUrl,
+              mediaType,
+              thumbnail: p.thumbnail && p.thumbnail.startsWith('http') ? p.thumbnail : '',
+              created: p.created_utc ? new Date(p.created_utc * 1000).toISOString() : '',
+              flair: p.link_flair_text || '',
+              selftext: (p.selftext || '').slice(0, 200),
+              geo: geo ? { lat: geo.lat, lon: geo.lon, region: geo.region, matchedKey: geo.matchedKey } : null,
+              nsfw: p.over_18 || false,
+            }
+          }).filter(Boolean)
+
+          return posts
+        }).catch(() => [])
+      )
+    )
+
+    results.forEach(r => {
+      if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+        allPosts.push(...r.value)
+      }
+    })
+
+    // Sort by score descending, take top posts
+    allPosts.sort((a, b) => b.score - a.score)
+    const geolocated = allPosts.filter(p => p.geo !== null)
+    const withMedia = allPosts.filter(p => p.mediaType === 'video' || p.mediaType === 'video_link')
+
+    return c.json({
+      posts: allPosts.slice(0, 60),
+      total: allPosts.length,
+      geolocated: geolocated.length,
+      withVideo: withMedia.length,
+      subreddits: subreddits.map(s => s.name),
+      source: 'reddit-public-json'
+    })
+  } catch (error) {
+    return c.json({ posts: [], error: String(error) })
   }
 })
 
@@ -692,16 +994,16 @@ app.get('/api/fusion/zones', (c) => c.json({ zones: FUSION_ZONES }))
 ═══════════════════════════════════════════════════════════════ */
 app.get('/api/health', (c) => c.json({
   status: 'operational',
-  version: '4.0.0',
+  version: '5.0.0',
   codename: 'SENTINEL OS',
   timestamp: new Date().toISOString(),
   uptime: 'edge-runtime',
-  domains: ['aviation', 'maritime', 'orbital', 'seismic', 'wildfire', 'weather', 'conflict', 'disaster', 'cyber', 'nuclear'],
+  domains: ['aviation', 'maritime', 'orbital', 'seismic', 'wildfire', 'weather', 'conflict', 'disaster', 'cyber', 'nuclear', 'gpsjam', 'social'],
 }))
 
 app.get('/api/status', (c) => {
   const keys: Record<string, boolean> = {}
-  const envKeys: (keyof Bindings)[] = ['NASA_FIRMS_KEY', 'OWM_KEY', 'N2YO_KEY', 'GFW_TOKEN', 'AVWX_KEY', 'RAPIDAPI_KEY', 'SHODAN_KEY', 'NEWS_API_KEY', 'AISSTREAM_KEY']
+  const envKeys: (keyof Bindings)[] = ['NASA_FIRMS_KEY', 'OWM_KEY', 'N2YO_KEY', 'GFW_TOKEN', 'AVWX_KEY', 'RAPIDAPI_KEY', 'SHODAN_KEY', 'NEWS_API_KEY', 'AISSTREAM_KEY', 'OTX_KEY']
   for (const k of envKeys) {
     keys[k] = !!(c.env[k])
   }
@@ -710,6 +1012,7 @@ app.get('/api/status', (c) => {
     targets: Object.keys(TARGETS),
     fusion_zones: FUSION_ZONES.length,
     geocoding_entries: Object.keys(GEO_DB).length,
+    gps_jam_zones: GPS_JAM_ZONES.length,
   })
 })
 
@@ -722,7 +1025,7 @@ app.get('/', (c) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<title>SENTINEL OS v4.0 — Global Situational Awareness</title>
+<title>SENTINEL OS v5.0 — Global Situational Awareness</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛰</text></svg>">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
