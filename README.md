@@ -97,7 +97,7 @@ Ukraine/Russia Front, Gaza Strip, Iran Theater, Red Sea/Houthi Zone, Strait of H
 | `/api/cyber/otx` | GET | **NEW** AlienVault OTX threat pulses |
 | `/api/cyber/urlhaus` | GET | **NEW** URLhaus malware URL feed |
 | `/api/cyber/threatfox` | GET | **NEW** ThreatFox IOC feed |
-| `/api/gps/jamming` | GET | **NEW** GPS jamming hotspots (15 zones) |
+| `/api/gps/jamming` | GET | **NEW** GPS jamming hotspots (15 zones) + GDELT GPS news |
 | `/api/social/reddit` | GET | **NEW** Reddit OSINT conflict posts |
 
 ## Environment Variables
@@ -164,11 +164,11 @@ Edge BFF (Backend-for-Frontend) Pattern:
 
 ## Changelog
 
-### v5.0.0 (2026-03-28)
+### v5.0.0 (2026-03-29)
 
 #### New Layers
 - **Cybersecurity (Enhanced)**: Added AlienVault OTX (threat pulses, IOCs, MITRE ATT&CK), URLhaus (malware URLs), ThreatFox (IOC feed) — all free, no key required for basic access
-- **GPS Jamming Anomalies**: 15 curated hotspots from GPSJam.org, Eurocontrol, EASA, C4ADS, OPSGROUP with severity ratings and confidence scores
+- **GPS Jamming Anomalies**: 15 curated hotspots from GPSJam.org, Eurocontrol, EASA, C4ADS, OPSGROUP with severity ratings and confidence scores + GDELT GPS news enrichment + visual radius circles on map
 - **Social Media Conflict OSINT**: Reddit integration (5 subreddits), automatic geocoding, video link extraction, score ranking
 
 #### Improvements
@@ -177,6 +177,14 @@ Edge BFF (Backend-for-Frontend) Pattern:
 - Frontend layer count: 20+ layers across 12 domains
 - HUD stats ring shows GPS and SOC counters
 - Phased loading extended to 5 phases for optimal UX
+
+#### Bug Fixes (v5.0.0)
+- Fixed Shodan fallback logic (removed unused `searchFailed` variable)
+- Fixed OTX API triple-fallback (subscribed → activity → search)
+- Fixed Reddit User-Agent to avoid 429 rate limiting
+- Added GPS jamming zone radius circles with severity coloring
+- GPS jamming circles properly toggle with layer visibility
+- Added GDELT GPS news enrichment to jamming endpoint
 
 ### v4.0.2 (2026-03-25)
 - GDELT timeout/retry reduction, parallel fetch, cycle cooldown
@@ -190,4 +198,4 @@ Edge BFF (Backend-for-Frontend) Pattern:
 - **Platform**: Cloudflare Pages
 - **Status**: Active (sandbox)
 - **Version**: 5.0.0
-- **Last Updated**: 2026-03-28
+- **Last Updated**: 2026-03-29

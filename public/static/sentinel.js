@@ -555,11 +555,10 @@ function parseThreatFox(data){
   });
 }
 
-// GPS Jamming zone parser
+// GPS Jamming zone parser + GDELT GPS news enrichment
 function parseGPSJamZones(data){
   if(!data?.zones||!Array.isArray(data.zones))return[];
-  return data.zones.map((z,i)=>{
-    const sevCol={'critical':'#ff0033','high':'#ff6633','medium':'#ffcc00','low':'#44aaff'};
+  const results = data.zones.map((z,i)=>{
     return{id:'gpsjam_'+i,type:'gpsjam',lat:z.lat+(Math.random()-0.5)*0.5,lon:z.lon+(Math.random()-0.5)*0.5,
       name:'GPS '+z.type.toUpperCase()+': '+z.name,
       details:{SEVERITY:z.severity?.toUpperCase()||'—',TYPE:z.type||'—',
@@ -568,6 +567,18 @@ function parseGPSJamZones(data){
         CONFIDENCE:z.confidence+'%',DATA_SOURCE:z.source||'—',
         SOURCE:'GPS Jamming DB (LIVE)'}};
   });
+  // Append GPS news articles from GDELT
+  if(data.gpsNews&&Array.isArray(data.gpsNews)){
+    data.gpsNews.forEach((n,i)=>{
+      results.push({id:'gpsnews_'+i,type:'gpsjam',lat:n.lat,lon:n.lon,
+        name:'GPS NEWS: '+(n.title||'').slice(0,70),
+        details:{HEADLINE:n.title||'—',SOURCE_DOMAIN:n.domain||'—',
+          REGION:n.region||'—',TIMESTAMP:n.timestamp||'—',
+          ARTICLE_URL:n.url||'—',
+          SOURCE:'GDELT GPS Intel (LIVE)'}});
+    });
+  }
+  return results;
 }
 
 // Social media Reddit post parser
@@ -1064,15 +1075,31 @@ function computeFusionStats(entities, threatBoard){
     }catch(e){}
   }
 
-  // GPS Jamming Anomalies — curated hotspots
+  // GPS Jamming Anomalies — curated hotspots + GDELT GPS news
+  let gpsJamCircles = [];
   async function fetchGPSJamming(){
     try{
       const d=await(await fetch('/api/gps/jamming')).json();
       const ents=parseGPSJamZones(d);
       if(ents.length){
-        replaceLive('gpsjam_','gpsjam',ents);
+        replaceLive('gpsjam_','gpsjam',[]);
+        replaceLive('gpsnews_','gpsjam',[]);
+        ents.forEach(e=>{entities.push(e);if(sceneReady)upsertMarker(e)});
         gpsJamZones=d.zones||[];
         apiStatus.gpsjam='live';
+        // Draw jamming zone radius circles on map
+        gpsJamCircles.forEach(c=>{if(map&&map.hasLayer(c))c.remove()});
+        gpsJamCircles=[];
+        if(map&&layerState.gpsjam){
+          (d.zones||[]).forEach(z=>{
+            const sevCol={'critical':'#ff0033','high':'#ff6633','medium':'#ffcc00','low':'#44aaff'}[z.severity]||'#ff6633';
+            const circle=L.circle([z.lat,z.lon],{
+              radius:z.radius*1000,color:sevCol,weight:0.8,opacity:0.4,
+              fillColor:sevCol,fillOpacity:0.04,dashArray:'6 4',interactive:false
+            }).addTo(map);
+            gpsJamCircles.push(circle);
+          });
+        }
         const critical=ents.filter(e=>e.details?.SEVERITY==='CRITICAL');
         critical.forEach(e=>logEvent('GPS JAMMING: '+e.name,'critical',e));
         if(cycleCount<=1)logEvent(ents.length+' GPS jamming hotspots tracked','info');
@@ -1228,6 +1255,12 @@ function computeFusionStats(entities, threatBoard){
     layerState[k]=!layerState[k];
     const grp=layerGroups[k];if(!grp||!map)return;
     if(layerState[k]){if(!map.hasLayer(grp))grp.addTo(map)}else{if(map.hasLayer(grp))grp.remove()}
+    // Toggle GPS jamming circles visibility
+    if(k==='gpsjam'&&gpsJamCircles.length>0){
+      gpsJamCircles.forEach(c=>{
+        if(layerState.gpsjam){if(!map.hasLayer(c))c.addTo(map)}else{if(map.hasLayer(c))c.remove()}
+      });
+    }
     renderUI();
   }
   function toggleZones(){

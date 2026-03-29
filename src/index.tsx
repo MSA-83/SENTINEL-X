@@ -431,7 +431,7 @@ app.post('/api/shodan/search', async (c) => {
   const q = query || 'port:502 scada'
 
   try {
-    let searchFailed = false
+    // Try primary search endpoint first
     try {
       const res = await fetch(
         `https://api.shodan.io/shodan/host/search?key=${key}&query=${encodeURIComponent(q)}&page=1`,
@@ -444,11 +444,11 @@ app.post('/api/shodan/search', async (c) => {
           return c.json({ matches: data.matches || [], total: data.total || 0, source: 'search' })
         }
       }
-      searchFailed = true
     } catch {
-      searchFailed = true
+      // Search failed, fall through to fallback
     }
-    if (!searchFailed) { /* unreachable but type-safe */ }
+
+    // Search failed or not available — try fallback methods
 
     let infoData: any = null
     try {
@@ -714,33 +714,53 @@ app.get('/api/cyber/otx', async (c) => {
     }
     if (otxKey) headers['X-OTX-API-KEY'] = otxKey
 
-    // Fetch recent public pulses (threat intel reports)
-    const res = await fetch(
-      'https://otx.alienvault.com/api/v1/pulses/subscribed?limit=50&modified_since=' + 
-      new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0],
-      { headers, signal: AbortSignal.timeout(12000) }
-    )
+    // Try subscribed pulses first (requires API key)
+    if (otxKey) {
+      try {
+        const res = await fetch(
+          'https://otx.alienvault.com/api/v1/pulses/subscribed?limit=50&modified_since=' + 
+          new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0],
+          { headers, signal: AbortSignal.timeout(12000) }
+        )
+        if (res.ok) {
+          const data = await res.json() as any
+          return c.json({ results: data.results || [], count: data.count || 0, source: 'otx-subscribed' })
+        }
+      } catch {}
+    }
 
-    if (!res.ok) {
-      // Fallback to activity feed (no key required)
-      const pubRes = await fetch(
+    // Fallback 1: Activity feed (works without key)
+    try {
+      const actRes = await fetch(
         'https://otx.alienvault.com/api/v1/pulses/activity?limit=30',
         { headers: { 'User-Agent': 'SENTINEL-OS/5.0', 'Accept': 'application/json' }, signal: AbortSignal.timeout(10000) }
       )
-      if (pubRes.ok) {
-        const pubData = await pubRes.json() as any
-        return c.json({ results: pubData.results || [], count: pubData.count || 0, source: 'otx-activity' })
+      if (actRes.ok) {
+        const actData = await actRes.json() as any
+        if (actData.results && actData.results.length > 0) {
+          return c.json({ results: actData.results || [], count: actData.count || 0, source: 'otx-activity' })
+        }
       }
-      return c.json({
-        results: [],
-        error: 'OTX API requires authentication',
-        registration_url: 'https://otx.alienvault.com/',
-        note: 'Register free at otx.alienvault.com to get an OTX API key for full access.'
-      })
-    }
+    } catch {}
 
-    const data = await res.json() as any
-    return c.json({ results: data.results || [], count: data.count || 0, source: 'otx-subscribed' })
+    // Fallback 2: Search for recent threat pulses
+    try {
+      const searchRes = await fetch(
+        'https://otx.alienvault.com/api/v1/search/pulses?q=malware+ransomware+apt&sort=modified&limit=25',
+        { headers: { 'User-Agent': 'SENTINEL-OS/5.0', 'Accept': 'application/json' }, signal: AbortSignal.timeout(10000) }
+      )
+      if (searchRes.ok) {
+        const searchData = await searchRes.json() as any
+        return c.json({ results: searchData.results || [], count: searchData.count || 0, source: 'otx-search' })
+      }
+    } catch {}
+
+    return c.json({
+      results: [],
+      error: 'OTX API unavailable',
+      registration_url: 'https://otx.alienvault.com/',
+      note: 'Register free at otx.alienvault.com to get an OTX API key for full access.'
+    })
   } catch (error) {
     return c.json({ results: [], error: String(error) })
   }
@@ -851,9 +871,28 @@ const GPS_JAM_ZONES = [
 ]
 
 app.get('/api/gps/jamming', async (c) => {
+  // Also try to get GPS-related news from GDELT for enrichment
+  let gpsNews: any[] = []
+  try {
+    const newsData = await fetchGDELTWithRetry(
+      'https://api.gdeltproject.org/api/v2/doc/doc?query=GPS+jamming+spoofing+GNSS+interference+navigation&mode=artlist&maxrecords=15&format=json&timespan=72h&sourcelang=english'
+    )
+    if (newsData?.articles) {
+      gpsNews = newsData.articles.map((art: any, i: number) => {
+        const geo = geocodeFromText(art.title, art.domain)
+        return geo ? {
+          title: art.title, url: art.url, domain: art.domain,
+          lat: geo.lat, lon: geo.lon, region: geo.region,
+          timestamp: art.seendate
+        } : null
+      }).filter(Boolean).slice(0, 10)
+    }
+  } catch {}
+
   return c.json({
     zones: GPS_JAM_ZONES,
     count: GPS_JAM_ZONES.length,
+    gpsNews,
     lastUpdated: new Date().toISOString(),
     sources: [
       { name: 'GPSJam.org', url: 'https://gpsjam.org/', description: 'Daily maps of GPS interference using ADS-B data', free: true, keyRequired: false },
@@ -885,9 +924,9 @@ app.get('/api/social/reddit', async (c) => {
   try {
     const results = await Promise.allSettled(
       subreddits.map(sub =>
-        fetch(`https://www.reddit.com/r/${sub.name}/hot.json?limit=15&t=week`, {
-          headers: { 'User-Agent': 'SENTINEL-OS/5.0 (OSINT Platform; contact: sentinel-os@osint.dev)' },
-          signal: AbortSignal.timeout(8000)
+        fetch(`https://www.reddit.com/r/${sub.name}/hot.json?limit=15&t=week&raw_json=1`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/5.0; +https://github.com/sentinel-os)' },
+          signal: AbortSignal.timeout(10000)
         }).then(r => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`)
           return r.json()
