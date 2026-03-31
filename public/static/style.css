@@ -277,3 +277,58 @@ body{background:var(--bg-void);color:var(--text-secondary);font-family:var(--fon
   .lp{width:300px}
   .rp{width:360px}
 }
+
+/* ── SATELLITE IMAGERY PANEL ── */
+.hud-sat-panel{
+  position:absolute;top:68px;right:340px;z-index:470;
+  width:310px;max-height:calc(100vh - 140px);
+  background:rgba(4,14,24,0.97);border:1px solid var(--border-dim);
+  border-radius:4px;overflow-y:auto;
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  animation:fadeIn 0.15s ease;
+  box-shadow:0 4px 24px rgba(0,0,0,0.5),0 0 1px var(--accent-cyan)22;
+}
+.hud-sat-panel::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--accent-cyan)33,transparent);
+}
+.sat-row{transition:background 0.15s,border-color 0.15s;border-left:2px solid transparent}
+.sat-row:hover{background:rgba(0,212,255,0.04)!important;border-left:2px solid var(--accent-cyan)!important}
+.sat-active{background:rgba(0,212,255,0.06)!important;border-left:2px solid var(--accent-cyan)!important}
+
+/* Satellite panel date input dark theme */
+.hud-sat-panel input[type="date"]{
+  color-scheme:dark;
+}
+.hud-sat-panel input[type="date"]::-webkit-calendar-picker-indicator{
+  filter:invert(0.7) sepia(1) saturate(5) hue-rotate(175deg);
+  cursor:pointer;
+}
+
+/* Satellite panel links */
+.hud-sat-panel a{transition:opacity 0.15s}
+.hud-sat-panel a:hover{opacity:0.7}
+
+/* ── SAT PANEL RESPONSIVE ── */
+@media(max-width:767px){
+  .hud-sat-panel{
+    right:8px!important;left:8px!important;width:auto!important;
+    top:54px!important;max-height:calc(100vh - 100px)!important;
+  }
+  .hud-sat-indicator{
+    left:8px!important;right:8px!important;bottom:90px!important;
+    transform:none!important;width:auto!important;
+  }
+}
+
+/* ── SATELLITE IMAGERY ACTIVE INDICATOR ── */
+.hud-sat-indicator{
+  position:absolute;bottom:80px;left:50%;transform:translateX(-50%);z-index:310;
+  display:flex;gap:8px;align-items:center;
+  background:rgba(0,212,255,0.06);border:1px solid rgba(0,212,255,0.2);
+  border-radius:20px;padding:4px 14px;
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  cursor:pointer;transition:background 0.2s;
+  animation:fadeIn 0.3s ease;
+}
+.hud-sat-indicator:hover{background:rgba(0,212,255,0.1)}

@@ -1,8 +1,8 @@
-# SENTINEL OS v5.0
+# SENTINEL OS v5.1
 
 ## Global Multi-Domain Situational Awareness Platform
 
-Real-time global situational awareness platform aggregating **20+ live OSINT data sources** across aviation, maritime, orbital, seismic, wildfire, weather, conflict, disaster, cyber, nuclear, GPS jamming/EW, and social media intelligence domains.
+Real-time global situational awareness platform aggregating **20+ live OSINT data sources** across aviation, maritime, orbital, seismic, wildfire, weather, conflict, disaster, cyber, nuclear, GPS jamming/EW, social media, and **satellite imagery** intelligence domains.
 
 ## Live Platform
 
@@ -34,6 +34,7 @@ Real-time global situational awareness platform aggregating **20+ live OSINT dat
 | Nuclear Intel | GDELT Nuclear Monitoring | LIVE | WMD |
 | **GPS Jamming** | **GPSJam.org curated + Eurocontrol + EASA + OPSGROUP** | **NEW v5.0** | **EW/SIGINT** |
 | **Social OSINT** | **Reddit (CombatFootage, UkraineWar, CredibleDefense, OSINT)** | **NEW v5.0** | **Social Media** |
+| **Satellite Imagery** | **NASA GIBS (MODIS/VIIRS daily) + EOX Sentinel-2 (10m cloudless)** | **NEW v5.1** | **Imagery** |
 
 ### v5.0 New Layers
 
@@ -61,16 +62,44 @@ Real-time global situational awareness platform aggregating **20+ live OSINT dat
 - Posts placed on map based on GPS metadata from title geocoding
 - Video links accessible in entity inspector panel
 
+### v5.1 New Feature: Real-Time Satellite Imagery Engine
+
+**Press S or click the SAT button in the header to access**
+
+5 satellite imagery products, all free with no API key required:
+
+| Product | Source | Resolution | Update | Max Zoom |
+|---------|--------|-----------|--------|----------|
+| MODIS Terra True Color | NASA GIBS | 250m/px | Daily (~3hr latency) | Z9 |
+| MODIS Aqua True Color | NASA GIBS | 250m/px | Daily (afternoon pass) | Z9 |
+| VIIRS SNPP True Color | NASA GIBS | 250m/px | Daily | Z9 |
+| VIIRS Nighttime Lights | NASA GIBS | Day/Night Band | Monthly composite | Z8 |
+| Sentinel-2 Cloudless | EOX S2Maps.eu | 10m/px | Annual mosaic | Z15 |
+
+Features:
+- **Date picker** with prev/next day navigation and quick "Yesterday" button
+- **Active indicator bar** showing current layer, date, and quick-off button
+- **Dark label overlay** automatically applied on top of satellite tiles for readability
+- **Keyboard shortcut S** toggles the satellite imagery panel
+- **SAT button** in header bar with active state highlighting
+- Seamlessly overlays on top of existing Leaflet intelligence layers
+
+Data sources (no authentication required):
+- **NASA GIBS**: https://gibs.earthdata.nasa.gov/ — Global Imagery Browse Services
+- **NASA Worldview**: https://worldview.earthdata.nasa.gov/ — Interactive imagery browser
+- **EOX Sentinel-2**: https://s2maps.eu/ — 10m cloud-free annual mosaic
+
 ### Key Features
 
+- **Satellite Imagery Engine** (S key) — NASA GIBS daily MODIS/VIIRS + EOX Sentinel-2 10m
 - **3D WebGL Globe** (G key) — Blue Marble imagery, atmospheric halo, threat-zone pulse rings
 - **Event Timeline** (T key) — Auto-populated by all data fetches with severity levels
 - **Entity Search** (/ or F) — Full-text across names, callsigns, ICAO codes
-- **Keyboard Navigation** — 10+ shortcuts (? for help)
+- **Keyboard Navigation** — 12+ shortcuts (? for help)
 - **Threat Assessment Engine** — Multi-factor scoring (0-100) with 15 geopolitical zones
 - **Military Intelligence** — Squawk code decoder, callsign database (MIL_DB), NATO role classification
 - **SGP4 Orbital Propagation** — Real-time satellite position calculation from TLE data
-- **Multi-Domain Fusion** — Cross-correlates entities across all 12 domains
+- **Multi-Domain Fusion** — Cross-correlates entities across all 13 domains
 - **GEO_DB** — 91 geopolitical location entries for article/post geocoding
 
 ### Threat Zones (15)
@@ -82,7 +111,7 @@ Ukraine/Russia Front, Gaza Strip, Iran Theater, Red Sea/Houthi Zone, Strait of H
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Main application UI |
-| `/api/health` | GET | System health check (v5.0.0, 12 domains) |
+| `/api/health` | GET | System health check (v5.1.0, 13 domains + satellite imagery info) |
 | `/api/status` | GET | API key status, targets, GPS zones, GEO entries |
 | `/api/proxy` | POST | Secure proxy for keyed APIs |
 | `/api/intel/gdelt` | POST | GDELT article geocoding (conflict, maritime, nuclear, cyber) |
@@ -164,6 +193,19 @@ Edge BFF (Backend-for-Frontend) Pattern:
 
 ## Changelog
 
+### v5.1.0 (2026-03-31)
+
+#### New Feature: Satellite Imagery Engine
+- **NASA GIBS integration** — 4 daily satellite imagery products (MODIS Terra/Aqua True Color, VIIRS SNPP True Color, VIIRS Nighttime Lights)
+- **EOX Sentinel-2** — 10m/px cloud-free annual mosaic (highest-resolution free global imagery)
+- **Satellite imagery panel** — Date picker with prev/next navigation, product selection with active/daily/static badges
+- **Active imagery indicator** — Floating bar showing current satellite layer and date
+- **Header SAT button** — Quick-toggle access with active state highlighting
+- **S keyboard shortcut** — Toggle satellite imagery panel
+- **Dark label overlay** — CartoDB dark labels automatically applied on satellite tiles for readability
+- No API keys required — all imagery sources are free and open
+- Health endpoint updated to v5.1.0 with 13 domains + satellite_imagery metadata
+
 ### v5.0.0 (2026-03-29)
 
 #### New Layers
@@ -197,5 +239,5 @@ Edge BFF (Backend-for-Frontend) Pattern:
 
 - **Platform**: Cloudflare Pages
 - **Status**: Active (sandbox)
-- **Version**: 5.0.0
-- **Last Updated**: 2026-03-29
+- **Version**: 5.1.0
+- **Last Updated**: 2026-03-31

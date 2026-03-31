@@ -1033,11 +1033,16 @@ app.get('/api/fusion/zones', (c) => c.json({ zones: FUSION_ZONES }))
 ═══════════════════════════════════════════════════════════════ */
 app.get('/api/health', (c) => c.json({
   status: 'operational',
-  version: '5.0.0',
+  version: '5.1.0',
   codename: 'SENTINEL OS',
   timestamp: new Date().toISOString(),
   uptime: 'edge-runtime',
-  domains: ['aviation', 'maritime', 'orbital', 'seismic', 'wildfire', 'weather', 'conflict', 'disaster', 'cyber', 'nuclear', 'gpsjam', 'social'],
+  domains: ['aviation', 'maritime', 'orbital', 'seismic', 'wildfire', 'weather', 'conflict', 'disaster', 'cyber', 'nuclear', 'gpsjam', 'social', 'satellite-imagery'],
+  satellite_imagery: {
+    sources: ['NASA GIBS (MODIS Terra/Aqua, VIIRS SNPP)', 'EOX Sentinel-2 Cloudless'],
+    update_frequency: 'daily (GIBS) / annual (S2)',
+    api_key_required: false,
+  },
 }))
 
 app.get('/api/status', (c) => {
@@ -1064,7 +1069,7 @@ app.get('/', (c) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<title>SENTINEL OS v5.0 — Global Situational Awareness</title>
+<title>SENTINEL OS v5.1 — Global Situational Awareness</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛰</text></svg>">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>

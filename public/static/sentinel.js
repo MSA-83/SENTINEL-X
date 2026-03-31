@@ -5,7 +5,8 @@
  * geopolitical zone monitoring, GDELT article-based conflict intel,
  * ReliefWeb disasters, NewsAPI supplemental intel, Shodan exposure, AISStream maritime,
  * AlienVault OTX + URLhaus + ThreatFox cybersecurity, GPS jamming anomalies,
- * Reddit social media conflict OSINT with video links.
+ * Reddit social media conflict OSINT with video links,
+ * NASA GIBS + EOX Sentinel-2 satellite imagery engine (MODIS/VIIRS daily + S2 cloudless).
  *
  * Architecture: Zero-framework DOM renderer with edge BFF proxy
  * Performance: GPU-accelerated CSS, marker clustering, phased data loading
@@ -661,7 +662,8 @@ const TICKER = [
   'LIVE: URLhaus + ThreatFox (abuse.ch) — malware URL tracking + IOC feeds — FREE',
   'LIVE: GPS Jamming Monitor — GNSS interference hotspots — GPSJam.org + Eurocontrol',
   'LIVE: Reddit OSINT — r/CombatFootage + r/UkraineWarVideoReport — geolocated conflict posts',
-  'SHORTCUTS: / Search G Globe T Timeline Z Zones 1-4 Panels ? Help',
+  'SHORTCUTS: / Search G Globe T Timeline Z Zones S Satellite 1-4 Panels ? Help',
+  'LIVE: NASA GIBS + EOX Sentinel-2 — daily satellite imagery overlay — MODIS/VIIRS/S2 — Press S',
 ];
 
 /* ═══════════════════════════════════════════════════════════════
@@ -715,6 +717,147 @@ function computeFusionStats(entities, threatBoard){
   let eventLog = [];
   let showKeys = false;
   let showTimeline = false;
+
+  /* ═══════════════════════════════════════════════════════════════
+     SATELLITE IMAGERY ENGINE — NASA GIBS + EOX Sentinel-2
+     Daily real-time satellite imagery via WMTS tile layers
+     Free, no API key required
+     Sources:
+       - NASA GIBS: https://gibs.earthdata.nasa.gov/ (MODIS, VIIRS)
+       - EOX Sentinel-2: https://s2maps.eu/ (annual cloudless mosaic)
+  ═══════════════════════════════════════════════════════════════ */
+  let showSatPanel = false;
+  let satDate = ''; // YYYY-MM-DD, defaults to yesterday
+  let activeSatLayer = 'none'; // none, modis_terra, viirs_snpp, viirs_night, sentinel2, modis_aqua
+  let satTileLayer = null;
+  let satLabelLayer = null; // labels overlay on top of satellite imagery
+
+  // Initialize date to yesterday (today's imagery is usually incomplete)
+  function initSatDate() {
+    const d = new Date(Date.now() - 86400000);
+    satDate = d.toISOString().split('T')[0];
+  }
+  initSatDate();
+
+  // NASA GIBS satellite imagery products
+  const SAT_PRODUCTS = {
+    modis_terra: {
+      label: 'MODIS Terra True Color',
+      sublabel: 'Daily 250m · NASA Worldview',
+      layer: 'MODIS_Terra_CorrectedReflectance_TrueColor',
+      tileMatrixSet: 'GoogleMapsCompatible_Level9',
+      format: 'jpg',
+      maxZoom: 9,
+      hasTime: true,
+      description: 'True-color composite from Terra/MODIS. Updated daily with ~3hr latency from satellite overpass. Resolution: 250m/px.',
+      source: 'NASA GIBS (WMTS)',
+      url: 'https://gibs.earthdata.nasa.gov/',
+    },
+    modis_aqua: {
+      label: 'MODIS Aqua True Color',
+      sublabel: 'Daily 250m · Afternoon pass',
+      layer: 'MODIS_Aqua_CorrectedReflectance_TrueColor',
+      tileMatrixSet: 'GoogleMapsCompatible_Level9',
+      format: 'jpg',
+      maxZoom: 9,
+      hasTime: true,
+      description: 'True-color composite from Aqua/MODIS (afternoon orbit). Complements Terra morning pass.',
+      source: 'NASA GIBS (WMTS)',
+      url: 'https://gibs.earthdata.nasa.gov/',
+    },
+    viirs_snpp: {
+      label: 'VIIRS SNPP True Color',
+      sublabel: 'Daily 250m · Suomi-NPP',
+      layer: 'VIIRS_SNPP_CorrectedReflectance_TrueColor',
+      tileMatrixSet: 'GoogleMapsCompatible_Level9',
+      format: 'jpg',
+      maxZoom: 9,
+      hasTime: true,
+      description: 'True-color composite from VIIRS on Suomi-NPP. Higher resolution than MODIS in some bands.',
+      source: 'NASA GIBS (WMTS)',
+      url: 'https://gibs.earthdata.nasa.gov/',
+    },
+    viirs_night: {
+      label: 'VIIRS Nighttime Lights',
+      sublabel: 'Monthly · Day/Night Band',
+      layer: 'VIIRS_SNPP_DayNightBand_AtSensor_M15',
+      tileMatrixSet: 'GoogleMapsCompatible_Level8',
+      format: 'png',
+      maxZoom: 8,
+      hasTime: true,
+      description: 'Nighttime visible/near-IR imagery showing city lights, fires, gas flares, and aurora. Monthly composite.',
+      source: 'NASA GIBS (WMTS)',
+      url: 'https://gibs.earthdata.nasa.gov/',
+    },
+    sentinel2: {
+      label: 'Sentinel-2 Cloudless',
+      sublabel: '10m resolution · Annual mosaic',
+      tileUrl: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857_512/default/GoogleMapsCompatible_Level15/{z}/{y}/{x}.jpg',
+      maxZoom: 15,
+      hasTime: false,
+      description: 'Cloud-free Sentinel-2 annual mosaic by EOX. 10m/px resolution — the highest-res free global imagery available.',
+      source: 'EOX S2Maps.eu',
+      url: 'https://s2maps.eu/',
+    },
+  };
+
+  function buildGIBSUrl(productKey) {
+    const p = SAT_PRODUCTS[productKey];
+    if (!p || p.tileUrl) return null; // Sentinel-2 has its own URL
+    // NASA GIBS WMTS → XYZ tile pattern for Leaflet
+    // Pattern: https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/{Layer}/default/{Time}/{TileMatrixSet}/{z}/{y}/{x}.{format}
+    return `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${p.layer}/default/${satDate}/${p.tileMatrixSet}/{z}/{y}/{x}.${p.format}`;
+  }
+
+  function applySatelliteLayer(productKey) {
+    // Remove current satellite tile layer
+    if (satTileLayer && map) { map.removeLayer(satTileLayer); satTileLayer = null; }
+    if (satLabelLayer && map) { map.removeLayer(satLabelLayer); satLabelLayer = null; }
+
+    if (productKey === 'none' || !SAT_PRODUCTS[productKey]) {
+      activeSatLayer = 'none';
+      renderHUD();
+      return;
+    }
+
+    activeSatLayer = productKey;
+    const p = SAT_PRODUCTS[productKey];
+
+    let tileUrl;
+    if (p.tileUrl) {
+      tileUrl = p.tileUrl; // Sentinel-2
+    } else {
+      tileUrl = buildGIBSUrl(productKey);
+    }
+
+    if (tileUrl && map) {
+      satTileLayer = L.tileLayer(tileUrl, {
+        maxZoom: p.maxZoom || 9,
+        tileSize: 256,
+        opacity: 0.92,
+        attribution: '',
+        errorTileUrl: '', // Silently skip missing tiles (night side of Earth, etc.)
+      }).addTo(map);
+
+      // Add labels overlay on top of satellite imagery for readability
+      satLabelLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+        subdomains: 'abcd',
+        maxZoom: 18,
+        opacity: 0.85,
+      }).addTo(map);
+
+      logEvent('Satellite imagery: ' + p.label + (p.hasTime ? ' [' + satDate + ']' : ''), 'info');
+    }
+
+    renderHUD();
+  }
+
+  function changeSatDate(newDate) {
+    satDate = newDate;
+    if (activeSatLayer !== 'none') {
+      applySatelliteLayer(activeSatLayer); // Rebuild with new date
+    }
+  }
 
   Object.keys(LAYERS).forEach(k => { layerState[k] = true; apiStatus[k] = 'loading'; });
   // Disable some layers by default
@@ -1396,6 +1539,7 @@ function computeFusionStats(entities, threatBoard){
       else if(k==='t'){showTimeline=!showTimeline;renderUI()}
       else if(k==='escape'){
         if(searchOpen){searchOpen=false;searchQuery='';searchResults=[];renderHUD()}
+        else if(showSatPanel){showSatPanel=false;renderHUD()}
         else if(selected){selected=null;renderUI()}
         else if(showTimeline){showTimeline=false;renderUI()}
         else if(showKeys){showKeys=false;renderHUD()}
@@ -1405,6 +1549,7 @@ function computeFusionStats(entities, threatBoard){
         setTimeout(()=>{const inp=document.getElementById('sentinel-search');if(inp)inp.focus()},50);
       }
       else if(k==='?'){showKeys=!showKeys;renderHUD()}
+      else if(k==='s'){showSatPanel=!showSatPanel;renderHUD()}
       else if(k==='r'){fetchAll()}
       else if(k==='h'){
         if(viewMode==='2d'&&map)map.flyTo([25,30],3,{duration:1});
@@ -1493,18 +1638,87 @@ function computeFusionStats(entities, threatBoard){
     if(critCount>0)h+=`<div class="stat crit-flash"><span style="color:#ff0033;font-weight:700">CRIT:${critCount}</span></div>`;
     h+=`</div>`;
 
+    /* ── SATELLITE IMAGERY ACTIVE INDICATOR ── */
+    if(activeSatLayer !== 'none' && SAT_PRODUCTS[activeSatLayer]){
+      const sp = SAT_PRODUCTS[activeSatLayer];
+      h+=`<div class="hud-sat-indicator" onclick="window._toggleSatPanel()">`;
+      h+=`<span style="font-size:10px">\uD83D\uDEF0</span>`;
+      h+=`<span style="color:var(--accent-cyan);font-size:7px;letter-spacing:1px;font-weight:600">${sp.label.toUpperCase()}</span>`;
+      if(sp.hasTime) h+=`<span style="color:var(--text-dim);font-size:6.5px;letter-spacing:0.5px">[${satDate}]</span>`;
+      else h+=`<span style="color:var(--accent-amber);font-size:5.5px;letter-spacing:0.5px">STATIC</span>`;
+      h+=`<span style="color:var(--text-tertiary);font-size:6px;cursor:pointer" onclick="event.stopPropagation();window._applySatLayer('none')">X OFF</span>`;
+      h+=`</div>`;
+    }
+
     if(showKeys){
       h+=`<div class="hud-keys">`;
       h+=`<div style="color:var(--accent-cyan);font-size:7px;letter-spacing:2px;margin-bottom:6px;text-align:center">KEYBOARD SHORTCUTS</div>`;
       const keys=[
         ['1-4','Switch panels'],['G','Toggle 2D/3D globe'],['Z','Toggle threat zones'],
-        ['T','Toggle timeline'],['/ or F','Search entities'],['R','Refresh all feeds'],
-        ['H','Home view (reset map)'],['Esc','Close panel/search'],
+        ['T','Toggle timeline'],['S','Satellite imagery panel'],['/ or F','Search entities'],
+        ['R','Refresh all feeds'],['H','Home view (reset map)'],['Esc','Close panel/search'],
         ['?','Show/hide shortcuts'],
       ];
       keys.forEach(([k,desc])=>{
         h+=`<div class="key-row"><kbd>${k}</kbd><span style="color:var(--text-secondary);font-size:6.5px">${desc}</span></div>`;
       });
+      h+=`</div>`;
+    }
+
+    /* ── SATELLITE IMAGERY PANEL ── */
+    if(showSatPanel){
+      h+=`<div class="hud-sat-panel">`;
+      h+=`<div style="padding:10px 14px 8px;border-bottom:1px solid var(--border-dim);display:flex;justify-content:space-between;align-items:center">`;
+      h+=`<div style="display:flex;align-items:center;gap:8px">`;
+      h+=`<span style="font-size:14px">\uD83D\uDEF0</span>`;
+      h+=`<span style="color:var(--accent-cyan);font-size:8px;letter-spacing:2px;font-weight:600">SATELLITE IMAGERY</span>`;
+      h+=`</div>`;
+      h+=`<span class="cb" onclick="window._toggleSatPanel()" style="color:var(--text-tertiary);font-size:14px;cursor:pointer">X</span>`;
+      h+=`</div>`;
+
+      // Date picker
+      h+=`<div style="padding:8px 14px;border-bottom:1px solid var(--border-dim)">`;
+      h+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">`;
+      h+=`<span style="color:var(--text-dim);font-size:6px;letter-spacing:2px">IMAGERY DATE</span>`;
+      h+=`<div style="display:flex;gap:4px">`;
+      h+=`<button onclick="window._satDatePrev()" style="background:var(--bg-tertiary);color:var(--accent-cyan);border:1px solid var(--border-dim);border-radius:2px;padding:2px 6px;font-size:8px;cursor:pointer;font-family:var(--font-mono)">\u25C0</button>`;
+      h+=`<input type="date" id="sat-date-input" value="${satDate}" onchange="window._satDateChange(this.value)" style="background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border-dim);border-radius:2px;padding:2px 8px;font-size:8px;font-family:var(--font-mono);width:110px">`;
+      h+=`<button onclick="window._satDateNext()" style="background:var(--bg-tertiary);color:var(--accent-cyan);border:1px solid var(--border-dim);border-radius:2px;padding:2px 6px;font-size:8px;cursor:pointer;font-family:var(--font-mono)">\u25B6</button>`;
+      h+=`<button onclick="window._satDateYesterday()" style="background:var(--bg-tertiary);color:var(--accent-amber);border:1px solid var(--border-dim);border-radius:2px;padding:2px 8px;font-size:7px;cursor:pointer;font-family:var(--font-mono);letter-spacing:0.5px">YESTERDAY</button>`;
+      h+=`</div></div>`;
+      h+=`<div style="color:var(--text-dim);font-size:5.5px;letter-spacing:0.5px">Note: Today's imagery may be incomplete. Use yesterday for full coverage.</div>`;
+      h+=`</div>`;
+
+      // Layer OFF option
+      h+=`<div onclick="window._applySatLayer('none')" class="sat-row${activeSatLayer==='none'?' sat-active':''}" style="padding:7px 14px;cursor:pointer;border-bottom:1px solid #030b14;display:flex;align-items:center;gap:10px">`;
+      h+=`<div style="width:10px;height:10px;border-radius:50%;background:${activeSatLayer==='none'?'var(--accent-green)':'var(--bg-tertiary)'};border:1px solid ${activeSatLayer==='none'?'var(--accent-green)':'var(--border-dim)'}"></div>`;
+      h+=`<div><div style="color:var(--text-primary);font-size:8px;font-weight:500">DEFAULT MAP (Off)</div>`;
+      h+=`<div style="color:var(--text-dim);font-size:5.5px">ESRI World Imagery + CartoDB labels</div></div></div>`;
+
+      // Satellite product options
+      Object.entries(SAT_PRODUCTS).forEach(([key, p]) => {
+        const isActive = activeSatLayer === key;
+        h+=`<div onclick="window._applySatLayer('${key}')" class="sat-row${isActive?' sat-active':''}" style="padding:7px 14px;cursor:pointer;border-bottom:1px solid #030b14;display:flex;align-items:center;gap:10px">`;
+        h+=`<div style="width:10px;height:10px;border-radius:50%;background:${isActive?'var(--accent-cyan)':'var(--bg-tertiary)'};border:1px solid ${isActive?'var(--accent-cyan)':'var(--border-dim)'};box-shadow:${isActive?'0 0 6px var(--accent-cyan)':'none'}"></div>`;
+        h+=`<div style="flex:1"><div style="color:${isActive?'var(--accent-cyan)':'var(--text-primary)'};font-size:8px;font-weight:500">${p.label}</div>`;
+        h+=`<div style="color:var(--text-dim);font-size:5.5px">${p.sublabel}</div>`;
+        if(isActive && p.description) h+=`<div style="color:var(--text-tertiary);font-size:5.5px;margin-top:3px;line-height:1.4">${p.description}</div>`;
+        h+=`</div>`;
+        if(!p.hasTime) h+=`<span style="color:var(--accent-amber);font-size:5px;letter-spacing:0.5px;background:rgba(255,170,0,0.08);padding:1px 4px;border-radius:2px">STATIC</span>`;
+        else h+=`<span style="color:var(--accent-green);font-size:5px;letter-spacing:0.5px;background:rgba(0,255,136,0.08);padding:1px 4px;border-radius:2px">DAILY</span>`;
+        h+=`</div>`;
+      });
+
+      // Info footer
+      h+=`<div style="padding:8px 14px;border-top:1px solid var(--border-dim)">`;
+      h+=`<div style="color:var(--text-dim);font-size:5.5px;letter-spacing:0.5px;line-height:1.6">`;
+      h+=`<strong style="color:var(--text-tertiary)">DATA SOURCES (ALL FREE, NO KEY NEEDED):</strong><br>`;
+      h+=`\u2022 <a href="https://gibs.earthdata.nasa.gov/" target="_blank" style="color:var(--accent-cyan);text-decoration:none">NASA GIBS</a> \u2014 Global Imagery Browse Services (MODIS/VIIRS daily)<br>`;
+      h+=`\u2022 <a href="https://worldview.earthdata.nasa.gov/" target="_blank" style="color:var(--accent-cyan);text-decoration:none">NASA Worldview</a> \u2014 Interactive satellite imagery browser<br>`;
+      h+=`\u2022 <a href="https://s2maps.eu/" target="_blank" style="color:var(--accent-cyan);text-decoration:none">EOX Sentinel-2</a> \u2014 10m cloudless annual mosaic<br>`;
+      h+=`Shortcut: <kbd style="background:var(--bg-tertiary);color:var(--accent-cyan);padding:0 4px;border-radius:2px;font-size:6px;border:1px solid var(--border-dim)">S</kbd> to toggle this panel`;
+      h+=`</div></div>`;
+
       h+=`</div>`;
     }
 
@@ -1536,6 +1750,7 @@ function computeFusionStats(entities, threatBoard){
     h += '<span style="color:#1a3a50;font-size:7px;letter-spacing:2.5px" class="hdr-stats">GLOBAL SITUATIONAL AWARENESS</span>';
 
     h += `<span onclick="window._toggleZones()" style="color:${showZones?'#ffcc00':'#1a3040'};font-size:7px;cursor:pointer;letter-spacing:1px;background:${showZones?'rgba(255,204,0,0.06)':'transparent'};border:1px solid ${showZones?'#ffcc0033':'#0a2040'};padding:2px 7px;border-radius:2px;user-select:none;flex-shrink:0" class="hdr-stats">ZONES</span>`;
+    h += `<span onclick="window._toggleSatPanel()" style="color:${showSatPanel||activeSatLayer!=='none'?'#00d4ff':'#1a3040'};font-size:7px;cursor:pointer;letter-spacing:1px;background:${showSatPanel||activeSatLayer!=='none'?'rgba(0,212,255,0.06)':'transparent'};border:1px solid ${showSatPanel||activeSatLayer!=='none'?'#00d4ff33':'#0a2040'};padding:2px 7px;border-radius:2px;user-select:none;flex-shrink:0" class="hdr-stats">\uD83D\uDEF0 SAT</span>`;
 
     if(emergencies.length>0){
       h+=`<div onclick="window._setPanel('threat')" style="display:flex;align-items:center;gap:5px;background:rgba(255,0,51,0.1);border:1px solid #ff003355;border-radius:3px;padding:2px 8px;cursor:pointer;flex-shrink:0;animation:pulse-fast 0.8s infinite">`;
@@ -1775,6 +1990,30 @@ function computeFusionStats(entities, threatBoard){
   window._toggleKeys = () => { showKeys=!showKeys; renderHUD(); };
   window._timelineSelect = id => { const e=entities.find(x=>x.id===id); if(e)flyTo(e); };
 
+  /* ── SATELLITE IMAGERY PANEL HANDLERS ── */
+  window._toggleSatPanel = () => { showSatPanel=!showSatPanel; renderHUD(); renderUI(); };
+  window._applySatLayer = (key) => { applySatelliteLayer(key); };
+  window._satDateChange = (val) => { if(val) changeSatDate(val); };
+  window._satDatePrev = () => {
+    const d = new Date(satDate);
+    d.setDate(d.getDate() - 1);
+    changeSatDate(d.toISOString().split('T')[0]);
+    renderHUD();
+  };
+  window._satDateNext = () => {
+    const d = new Date(satDate);
+    d.setDate(d.getDate() + 1);
+    // Don't go past today
+    const today = new Date().toISOString().split('T')[0];
+    const next = d.toISOString().split('T')[0];
+    if(next <= today){ changeSatDate(next); renderHUD(); }
+  };
+  window._satDateYesterday = () => {
+    initSatDate(); // Reset to yesterday
+    if(activeSatLayer !== 'none') applySatelliteLayer(activeSatLayer);
+    renderHUD();
+  };
+
   /* ── BOOT SEQUENCE ── */
   function boot(){
     console.log('%c SENTINEL OS v5.0 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px');
@@ -1789,6 +2028,7 @@ function computeFusionStats(entities, threatBoard){
     logEvent('SENTINEL OS v5.0 initialized','info');
     logEvent('Systems online: 2D Map, 3D Globe, Search, Timeline, Keyboard shortcuts','info');
     logEvent('NEW v5.0: Cybersecurity (OTX+URLhaus+ThreatFox), GPS Jamming, Social OSINT','info');
+    logEvent('NEW v5.0: Satellite Imagery Engine (NASA GIBS MODIS/VIIRS + EOX Sentinel-2) — Press S','info');
 
     // Staggered data loading
     fetchAll();
