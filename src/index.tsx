@@ -35,6 +35,9 @@ type Bindings = {
   OTX_KEY?: string
   REDDIT_CLIENT_ID?: string
   REDDIT_SECRET?: string
+  AI?: any                    // ← NEW: Workers AI binding
+  OSINT_CACHE?: any           // future KV cache
+  DB?: any                    // future D1 database
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -1061,7 +1064,12 @@ app.get('/api/status', (c) => {
 })
 
 /* ═══════════════════════════════════════════════════════════════
-   SERVE MAIN HTML PAGE
+   AI CHAT — Ask Sentinel (new route)
+═══════════════════════════════════════════════════════════════ */
+app.route('/api', chat)   // ← NEW: Mounts the chat endpoint at /api/chat
+
+/* ═══════════════════════════════════════════════════════════════
+   SERVE MAIN HTML PAGE (unchanged)
 ═══════════════════════════════════════════════════════════════ */
 app.get('/', (c) => {
   const html = `<!DOCTYPE html>
