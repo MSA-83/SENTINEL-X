@@ -1,243 +1,318 @@
-# SENTINEL OS v5.1
+# SENTINEL OS v6.1
 
 ## Global Multi-Domain Situational Awareness Platform
 
-Real-time global situational awareness platform aggregating **20+ live OSINT data sources** across aviation, maritime, orbital, seismic, wildfire, weather, conflict, disaster, cyber, nuclear, GPS jamming/EW, social media, and **satellite imagery** intelligence domains.
+Production-grade, free-source-first situational awareness system aggregating **20+ live OSINT data sources** across aviation, maritime, orbital, seismic, wildfire, weather, conflict, disaster, cyber, nuclear, GNSS jamming, social media, and satellite imagery intelligence domains.
 
-## Live Platform
+**Architecture**: Edge BFF (Backend-for-Frontend) on Cloudflare Pages. All keyed API calls route through server-side proxy -- the browser never sees secrets. Every record conforms to a canonical event schema with provenance and confidence metadata.
 
-- **Sandbox**: https://3000-imtcnhyw0xv31oywd9i92-dfc00ec5.sandbox.novita.ai
+## URLs
+
 - **GitHub**: https://github.com/MSA-83/SENTINEL-X
-
-## Features
-
-### Live Data Layers (20+)
-
-| Layer | Source | Status | Domain |
-|-------|--------|--------|--------|
-| Aircraft (ADS-B) | OpenSky Network | LIVE | Aviation |
-| Military Air | OpenSky MIL-DB + ADS-B Exchange | LIVE | Aviation |
-| Maritime AIS | AISStream.io WebSocket | Config Ready | Maritime |
-| Dark Fleet | Global Fishing Watch (Gap Events) | LIVE | Maritime |
-| Fishing Activity | Global Fishing Watch | LIVE | Maritime |
-| ISS Position | wheretheiss.at + SGP4 | LIVE (5s cycle) | Orbital |
-| Satellites | N2YO + CelesTrak TLE | LIVE | Orbital |
-| Space Debris | CelesTrak SGP4 | LIVE | Orbital |
-| Military Satellites | CelesTrak Military | LIVE | Orbital |
-| Seismic Events | USGS Earthquake API | LIVE | Environmental |
-| Wildfires | NASA FIRMS VIIRS | LIVE | Environmental |
-| Storm Systems | OpenWeatherMap (20 cities) | LIVE | Environmental |
-| Aviation WX | AVWX METAR (15 airports) | LIVE | Environmental |
-| Conflict Intel | GDELT 2.0 + NewsAPI | LIVE | Geopolitical |
-| Disasters | GDACS + ReliefWeb | LIVE | Environmental |
-| **Cyber Threats** | **AlienVault OTX + URLhaus + ThreatFox + Shodan + GDELT** | **NEW v5.0** | **Cyber** |
-| Nuclear Intel | GDELT Nuclear Monitoring | LIVE | WMD |
-| **GPS Jamming** | **GPSJam.org curated + Eurocontrol + EASA + OPSGROUP** | **NEW v5.0** | **EW/SIGINT** |
-| **Social OSINT** | **Reddit (CombatFootage, UkraineWar, CredibleDefense, OSINT)** | **NEW v5.0** | **Social Media** |
-| **Satellite Imagery** | **NASA GIBS (MODIS/VIIRS daily) + EOX Sentinel-2 (10m cloudless)** | **NEW v5.1** | **Imagery** |
-
-### v5.0 New Layers
-
-#### 1. Enhanced Cybersecurity Layer
-- **AlienVault OTX** — Community threat intelligence with 200K+ participants. IOC feeds, adversary tracking, malware families, MITRE ATT&CK mapping.
-  - **Get API Key**: Free registration at https://otx.alienvault.com/
-- **URLhaus (abuse.ch)** — Malware URL tracking. No API key required. Tracks active malware distribution sites globally.
-  - **Direct Access**: https://urlhaus.abuse.ch/
-- **ThreatFox (abuse.ch)** — Indicators of Compromise (IOC) feed. No API key required. Tracks malware families, C2 servers, payload hashes.
-  - **Direct Access**: https://threatfox.abuse.ch/
-- **Shodan** — Internet exposure intelligence (existing, enhanced integration)
-- **GDELT Cyber** — Cyberattack news intelligence (existing)
-
-#### 2. GPS Jamming Anomalies Layer
-- **15 curated GPS jamming/spoofing hotspots** with severity ratings (Critical/High/Medium/Low)
-- Sources: GPSJam.org (ADS-B NIC/NAC data), Eurocontrol GNSS reports, EASA safety bulletins, C4ADS research, OPSGROUP pilot reports
-- Covers: Military EW jamming (Krasukha-4, Pole-21), GPS spoofing near conflict zones, maritime chokepoint interference
-- Key zones: Ukraine Eastern Front, Kaliningrad/Baltic, Syria, Israel/Ben Gurion, Black Sea, North Korea DMZ, South China Sea
-- **Free monitoring**: https://gpsjam.org/ (daily maps), https://www.flightradar24.com/data/gps-jamming
-
-#### 3. Social Media Conflict OSINT Layer
-- **Reddit public JSON API** (no authentication required for public subreddits)
-- Subreddits monitored: r/CombatFootage, r/UkraineWarVideoReport, r/CredibleDefense, r/UkrainianConflict, r/osint
-- Features: Automatic geocoding from post titles, video link extraction (Reddit video, YouTube, Twitter/X, Streamable), score/comment ranking
-- Posts placed on map based on GPS metadata from title geocoding
-- Video links accessible in entity inspector panel
-
-### v5.1 New Feature: Real-Time Satellite Imagery Engine
-
-**Press S or click the SAT button in the header to access**
-
-5 satellite imagery products, all free with no API key required:
-
-| Product | Source | Resolution | Update | Max Zoom |
-|---------|--------|-----------|--------|----------|
-| MODIS Terra True Color | NASA GIBS | 250m/px | Daily (~3hr latency) | Z9 |
-| MODIS Aqua True Color | NASA GIBS | 250m/px | Daily (afternoon pass) | Z9 |
-| VIIRS SNPP True Color | NASA GIBS | 250m/px | Daily | Z9 |
-| VIIRS Nighttime Lights | NASA GIBS | Day/Night Band | Monthly composite | Z8 |
-| Sentinel-2 Cloudless | EOX S2Maps.eu | 10m/px | Annual mosaic | Z15 |
-
-Features:
-- **Date picker** with prev/next day navigation and quick "Yesterday" button
-- **Active indicator bar** showing current layer, date, and quick-off button
-- **Dark label overlay** automatically applied on top of satellite tiles for readability
-- **Keyboard shortcut S** toggles the satellite imagery panel
-- **SAT button** in header bar with active state highlighting
-- Seamlessly overlays on top of existing Leaflet intelligence layers
-
-Data sources (no authentication required):
-- **NASA GIBS**: https://gibs.earthdata.nasa.gov/ — Global Imagery Browse Services
-- **NASA Worldview**: https://worldview.earthdata.nasa.gov/ — Interactive imagery browser
-- **EOX Sentinel-2**: https://s2maps.eu/ — 10m cloud-free annual mosaic
-
-### Key Features
-
-- **Satellite Imagery Engine** (S key) — NASA GIBS daily MODIS/VIIRS + EOX Sentinel-2 10m
-- **3D WebGL Globe** (G key) — Blue Marble imagery, atmospheric halo, threat-zone pulse rings
-- **Event Timeline** (T key) — Auto-populated by all data fetches with severity levels
-- **Entity Search** (/ or F) — Full-text across names, callsigns, ICAO codes
-- **Keyboard Navigation** — 12+ shortcuts (? for help)
-- **Threat Assessment Engine** — Multi-factor scoring (0-100) with 15 geopolitical zones
-- **Military Intelligence** — Squawk code decoder, callsign database (MIL_DB), NATO role classification
-- **SGP4 Orbital Propagation** — Real-time satellite position calculation from TLE data
-- **Multi-Domain Fusion** — Cross-correlates entities across all 13 domains
-- **GEO_DB** — 91 geopolitical location entries for article/post geocoding
-
-### Threat Zones (15)
-
-Ukraine/Russia Front, Gaza Strip, Iran Theater, Red Sea/Houthi Zone, Strait of Hormuz, Taiwan Strait, South China Sea, Korean Peninsula, Sudan Civil War, Sahel Insurgency, Kashmir LOC, Black Sea NATO Watch, Horn of Africa, Baltic NATO Frontier, Arctic GIUK Gap
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Main application UI |
-| `/api/health` | GET | System health check (v5.1.0, 13 domains + satellite imagery info) |
-| `/api/status` | GET | API key status, targets, GPS zones, GEO entries |
-| `/api/proxy` | POST | Secure proxy for keyed APIs |
-| `/api/intel/gdelt` | POST | GDELT article geocoding (conflict, maritime, nuclear, cyber) |
-| `/api/intel/news` | POST | NewsAPI geocoding (conflict, cyber, nuclear, gpsjam) |
-| `/api/weather/global` | GET | OWM multi-city weather (20 cities) |
-| `/api/avwx/global` | GET | AVWX multi-airport METAR (15 airports) |
-| `/api/reliefweb/disasters` | GET | ReliefWeb disaster data (50 entries) |
-| `/api/shodan/search` | POST | Shodan internet exposure |
-| `/api/acled/events` | GET | ACLED conflict data |
-| `/api/ais/config` | GET | AISStream.io WebSocket config |
-| `/api/fusion/zones` | GET | Threat zone definitions |
-| `/api/cyber/otx` | GET | **NEW** AlienVault OTX threat pulses |
-| `/api/cyber/urlhaus` | GET | **NEW** URLhaus malware URL feed |
-| `/api/cyber/threatfox` | GET | **NEW** ThreatFox IOC feed |
-| `/api/gps/jamming` | GET | **NEW** GPS jamming hotspots (15 zones) + GDELT GPS news |
-| `/api/social/reddit` | GET | **NEW** Reddit OSINT conflict posts |
-
-## Environment Variables
-
-```
-NASA_FIRMS_KEY=<your-key>
-OWM_KEY=<your-key>
-N2YO_KEY=<your-key>
-GFW_TOKEN=<your-token>
-AVWX_KEY=<your-key>
-RAPIDAPI_KEY=<your-key>
-SHODAN_KEY=<your-key>
-NEWS_API_KEY=<your-key>
-AISSTREAM_KEY=<your-key>
-ACLED_KEY=<optional-register-at-developer.acleddata.com>
-OTX_KEY=<optional-register-at-otx.alienvault.com>
-REDDIT_CLIENT_ID=<optional-for-enhanced-access>
-REDDIT_SECRET=<optional-for-enhanced-access>
-```
-
-## Tech Stack
-
-- **Backend**: Hono v4 on Cloudflare Pages Edge Runtime
-- **Frontend**: Vanilla JS, Zero-framework DOM renderer
-- **Map**: Leaflet 1.9.4 + MarkerCluster
-- **3D Globe**: Globe.gl + Three.js
-- **Orbital**: satellite.js (SGP4 propagation)
-- **Build**: Vite + Wrangler
-- **Dev Server**: PM2 + wrangler pages dev
+- **Cloudflare**: Deployed to Cloudflare Pages as `sentinel-os`
 
 ## Architecture
 
 ```
-Edge BFF (Backend-for-Frontend) Pattern:
-- All keyed API calls route through /api/proxy
-- Dedicated endpoints for each new layer (OTX, URLhaus, ThreatFox, GPS, Reddit)
-- 91 GEO_DB entries for article/post geocoding
-- 15 curated GPS jamming zones with severity ratings
-- Phased data loading: 5 phases from core feeds to supplemental
+Browser (sentinel.js)
+  |
+  |--- Direct free APIs (USGS, ISS, CelesTrak TLE)
+  |--- /api/proxy  --> Hono BFF --> Upstream keyed APIs
+  |--- /api/cyber/* --> CISA KEV, OTX, URLhaus, ThreatFox
+  |--- /api/gnss/*  --> Curated GNSS zones + GDELT enrichment
+  |--- /api/social/* --> Reddit public JSON
+  |--- /api/intel/*  --> GDELT article geocoding
+  |--- /api/fusion/* --> Threat zones, viewport queries
+  |
+  Leaflet map + SVG markers + MarkerCluster
+  Inspector panel + Threat board + Search
+  Satellite imagery (NASA GIBS + Sentinel-2)
 ```
 
-## Data Flow
+### Key Design Decisions
 
-1. Frontend boots, initializes Leaflet map + HUD
-2. `fetchAll()` runs every 60s with overlap guard
-3. Phase 1: Core feeds (OpenSky, USGS, ISS, FIRMS, OWM, N2YO, AVWX, Military)
-4. Phase 2: Slower feeds (GFW, GDACS, ReliefWeb, GPS Jamming)
-5. Phase 3: GDELT intel (conflict+maritime parallel, then nuclear+cyber)
-6. Phase 4: Cyber feeds (OTX at +2s, URLhaus at +3s, ThreatFox at +4s)
-7. Phase 5: Supplemental (NewsAPI at +5s, Shodan at +6s, Reddit Social at +7s)
+- **Edge BFF pattern**: All keyed API calls go through `/api/proxy` -- secrets are injected server-side
+- **Canonical event schema**: Every entity has `id`, `entity_type`, `source`, `confidence`, `severity`, `provenance`, etc.
+- **Provenance tracking**: `direct-api` (real coordinates), `geocoded-inferred` (text-matched, low confidence), `curated-reference` (expert-maintained)
+- **Graceful degradation**: Each upstream failure returns a structured error object; UI shows source health
+- **Free-first**: All critical layers work without API keys; optional keys unlock additional sources
 
-## Registration Guidance (Free Services)
+## Data Model
 
-| Service | URL | Purpose |
-|---------|-----|---------|
-| AlienVault OTX | https://otx.alienvault.com/ | Cyber threat intelligence API key |
-| ACLED | https://developer.acleddata.com/ | Conflict event data |
-| Shodan (Full) | https://shodan.io/store | Internet exposure search |
-| ADS-B Exchange | https://rapidapi.com/adsbexchange | Military aircraft tracking |
-| GPSJam.org | https://gpsjam.org/ | GPS interference daily maps |
-| URLhaus | https://urlhaus.abuse.ch/ | Malware URL tracking (no key needed) |
-| ThreatFox | https://threatfox.abuse.ch/ | IOC feed (no key needed) |
-| Flightradar24 GPS | https://www.flightradar24.com/data/gps-jamming | GPS jamming map |
+### Canonical Event Schema
+
+Every record reaching the client conforms to this shape:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique identifier (prefixed by source) |
+| `entity_type` | string | e.g. `aircraft`, `seismic`, `cyber_vulnerability`, `gnss_jamming` |
+| `source` | string | Data provider name |
+| `source_url` | string | Link to upstream source |
+| `title` | string | Display name |
+| `description` | string | Detail text |
+| `lat`, `lon` | number/null | WGS84 coordinates |
+| `altitude` | number/null | Feet (aircraft) or km (satellites) |
+| `velocity` | number/null | Knots (aircraft) or km/s (orbital) |
+| `heading` | number/null | Degrees |
+| `timestamp` | ISO string | Event time |
+| `observed_at` | ISO string | When SENTINEL observed it |
+| `confidence` | 0-100 | Data confidence (30 = text-inferred, 95 = direct API) |
+| `severity` | string | `critical`, `high`, `medium`, `low`, `info` |
+| `risk_score` | 0-100 | Computed threat score |
+| `region` | string | Geographic region |
+| `tags` | string[] | Categorization tags |
+| `correlations` | string[] | Related entity IDs |
+| `metadata` | object | Source-specific fields |
+| `provenance` | string | `direct-api`, `geocoded-inferred`, `curated-reference`, `no-location` |
+
+## Live Data Layers
+
+### Free (No API Key Required)
+
+| Layer | Source | Endpoint | Update |
+|-------|--------|----------|--------|
+| Seismic | USGS Earthquake API | Direct fetch | Real-time |
+| ISS Position | wheretheiss.at | Direct fetch | 5s interval |
+| CelesTrak TLE | celestrak.org SGP4 | Direct fetch | 3 min |
+| GNSS Anomalies | Curated reference model | `/api/gnss/anomalies` | Daily |
+| CISA KEV | CISA Known Exploited Vulns | `/api/cyber/cisa-kev` | Daily |
+| URLhaus | abuse.ch malware URLs | `/api/cyber/urlhaus` | Hourly |
+| ThreatFox | abuse.ch IOC feed | `/api/cyber/threatfox` | 3-day window |
+| GDELT Conflict | GDELT 2.0 Article API | `/api/intel/gdelt` | 48h window |
+| GDACS Disasters | GDACS API | via `/api/proxy` | Real-time |
+| ReliefWeb | UN OCHA disaster data | `/api/reliefweb/disasters` | Daily |
+| Social (Reddit) | Reddit public JSON | `/api/social/reddit` | 60s |
+| Satellite Imagery | NASA GIBS + EOX Sentinel-2 | Client-side tiles | Daily/Annual |
+
+### Requires Free API Key
+
+| Layer | Source | Key | Registration URL |
+|-------|--------|-----|------------------|
+| Aircraft (ADS-B) | OpenSky Network | None (free tier) | https://opensky-network.org/index.php/register |
+| Wildfires | NASA FIRMS | `NASA_FIRMS_KEY` | https://firms.modaps.eosdis.nasa.gov/api/ |
+| Weather | OpenWeatherMap | `OWM_KEY` | https://openweathermap.org/appid |
+| Satellites | N2YO | `N2YO_KEY` | https://www.n2yo.com/api/ |
+| METAR | AVWX | `AVWX_KEY` | https://avwx.rest/ |
+| Fishing / Dark Fleet | Global Fishing Watch | `GFW_TOKEN` | https://globalfishingwatch.org/our-apis/ |
+| OTX Threat Intel | AlienVault OTX | `OTX_KEY` | https://otx.alienvault.com/ |
+| Internet Exposure | Shodan | `SHODAN_KEY` | https://account.shodan.io/ |
+| News Intel | NewsAPI | `NEWS_API_KEY` | https://newsapi.org/register |
+| Armed Conflict | ACLED | `ACLED_KEY` + `ACLED_EMAIL` | https://developer.acleddata.com/ |
+
+### Requires Paid API Key
+
+| Layer | Source | Key | Notes |
+|-------|--------|-----|-------|
+| Military Air | ADS-B Exchange | `RAPIDAPI_KEY` | Via RapidAPI marketplace |
+| Maritime AIS | AISStream.io | `AISSTREAM_KEY` | WebSocket-based, key used server-side |
+
+## API Endpoints
+
+### Health & Status
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/health` | None | Operational status, version, domain list |
+| GET | `/api/status` | None | Key configuration status, target counts |
+
+### Secure Proxy
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/proxy` | None | Server-side proxy for keyed upstream APIs. Body: `{target, params}` |
+
+### Domain Endpoints
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/weather/global` | `OWM_KEY` | Weather for 20 global cities |
+| GET | `/api/avwx/global` | `AVWX_KEY` | METAR for 15 major airports |
+| GET | `/api/ais/config` | None | AIS availability (never exposes key) |
+| POST | `/api/shodan/search` | `SHODAN_KEY` | Internet exposure search |
+| GET | `/api/reliefweb/disasters` | None | UN disaster data |
+| GET | `/api/acled/events` | `ACLED_KEY` | Armed conflict events |
+| POST | `/api/intel/gdelt` | None | GDELT article geocoding (conflict/cyber/nuclear/maritime) |
+| POST | `/api/intel/news` | `NEWS_API_KEY` | NewsAPI supplemental intel |
+| GET | `/api/cyber/cisa-kev` | None | CISA Known Exploited Vulnerabilities |
+| GET | `/api/cyber/otx` | `OTX_KEY` (optional) | AlienVault OTX threat pulses |
+| GET | `/api/cyber/urlhaus` | None | abuse.ch malware URLs |
+| GET | `/api/cyber/threatfox` | None | abuse.ch IOC feed |
+| GET | `/api/gnss/anomalies` | None | GNSS jamming/spoofing zones + news |
+| GET | `/api/social/reddit` | None | Reddit OSINT posts |
+| GET | `/api/fusion/zones` | None | All threat zones |
+| GET | `/api/fusion/viewport` | None | Viewport-filtered zones (`?latMin=&latMax=&lonMin=&lonMax=`) |
+
+## Satellite Imagery
+
+Five free satellite tile sources integrated (no API key required):
+
+| Product | Source | Resolution | Update | Max Zoom |
+|---------|--------|------------|--------|----------|
+| MODIS Terra True Color | NASA GIBS | 250 m/px | Daily (~3h latency) | Z9 |
+| MODIS Aqua True Color | NASA GIBS | 250 m/px | Daily (afternoon) | Z9 |
+| VIIRS SNPP True Color | NASA GIBS | 250 m/px | Daily | Z9 |
+| VIIRS Nighttime Lights | NASA GIBS | Monthly composite | Monthly | Z8 |
+| Sentinel-2 Cloudless | EOX S2Maps.eu | 10 m/px | Annual mosaic | Z15 |
+
+Press **S** or click **SAT** in the header to open the satellite imagery panel.
+
+## Local Development
+
+### Prerequisites
+- Node.js >= 18
+- npm
+
+### Setup
+
+```bash
+git clone https://github.com/MSA-83/SENTINEL-X.git
+cd SENTINEL-X
+
+# Install dependencies
+npm install
+
+# Create .dev.vars with your API keys (see Required Keys below)
+cat > .dev.vars << 'EOF'
+NASA_FIRMS_KEY=your_key
+OWM_KEY=your_key
+N2YO_KEY=your_key
+GFW_TOKEN=your_token
+AVWX_KEY=your_key
+RAPIDAPI_KEY=your_key
+SHODAN_KEY=your_key
+NEWS_API_KEY=your_key
+AISSTREAM_KEY=your_key
+OTX_KEY=your_key
+ACLED_KEY=your_key
+ACLED_EMAIL=your_email
+EOF
+
+# Build
+npm run build
+
+# Start local dev server (reads .dev.vars automatically)
+npm run preview
+# or with PM2:
+pm2 start ecosystem.config.cjs
+```
+
+The app will be available at http://localhost:3000
+
+### Scripts
+
+| Script | Description |
+|--------|-------------|
+| `npm run dev` | Vite dev server (HMR) |
+| `npm run build` | Production build to `dist/` |
+| `npm run preview` | Wrangler Pages local preview |
+| `npm run deploy` | Build + deploy to Cloudflare Pages |
+
+## Production Deployment
+
+```bash
+# 1. Set Cloudflare API token
+export CLOUDFLARE_API_TOKEN=your_token
+
+# 2. Build and deploy
+npm run deploy
+
+# 3. Set production secrets
+npx wrangler pages secret put NASA_FIRMS_KEY --project-name sentinel-os
+npx wrangler pages secret put OWM_KEY --project-name sentinel-os
+# ... repeat for each key
+```
+
+## Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| 1 | Layers panel |
+| 2 | Threat board |
+| 3 | Sources / timeline |
+| S | Satellite imagery panel |
+| Z | Toggle threat zones |
+| R | Refresh all feeds |
+| / or F | Focus search |
+| Escape | Close panel / search |
+
+## Project Structure
+
+```
+sentinel-os/
+  src/
+    index.tsx          # Hono BFF backend (all API routes, proxy, canonical schema)
+  public/static/
+    sentinel.js        # Frontend client (map, parsers, UI, threat scoring)
+    style.css          # Dark-ops CSS (Palantir/NATO COP design language)
+  ecosystem.config.cjs # PM2 config (NO secrets -- reads .dev.vars)
+  package.json         # Dependencies and scripts
+  vite.config.ts       # Vite + Hono Cloudflare Pages plugin
+  wrangler.jsonc       # Cloudflare Pages deployment config
+  tsconfig.json        # TypeScript config
+  .dev.vars            # Local secrets (never committed)
+  .gitignore           # Ignores node_modules, dist, .dev.vars, .wrangler
+```
+
+## Security
+
+- **No frontend keys**: All API keys are server-side only. The browser never sees secrets.
+- **No hardcoded secrets**: `ecosystem.config.cjs` reads from `.dev.vars` / environment
+- **AIS key protection**: `/api/ais/config` returns only availability boolean, never the raw key
+- **Provenance tracking**: Inferred locations explicitly labeled with low confidence scores
+- **Structured errors**: Upstream failures return graceful error objects, not raw stack traces
+
+## Free OSINT Source Reference
+
+| Source | URL | Key Required | Notes |
+|--------|-----|--------------|-------|
+| USGS Earthquake | https://earthquake.usgs.gov/ | No | Real-time GeoJSON feed |
+| ISS Position | https://wheretheiss.at/ | No | 5-second polling |
+| CelesTrak | https://celestrak.org/ | No | TLE data for SGP4 propagation |
+| NASA GIBS | https://gibs.earthdata.nasa.gov/ | No | Satellite imagery tiles |
+| EOX Sentinel-2 | https://s2maps.eu/ | No | 10 m/px annual mosaic |
+| CISA KEV | https://www.cisa.gov/known-exploited-vulnerabilities-catalog | No | Known exploited vulns |
+| URLhaus | https://urlhaus-api.abuse.ch/ | No | Malware URL database |
+| ThreatFox | https://threatfox-api.abuse.ch/ | No | IOC sharing platform |
+| GDELT 2.0 | https://api.gdeltproject.org/ | No | Global news geocoding |
+| GDACS | https://www.gdacs.org/ | No | Disaster alerts |
+| ReliefWeb | https://api.reliefweb.int/ | No | UN disaster data |
+| GPSJam.org | https://gpsjam.org/ | No | Daily GNSS interference maps |
+| Reddit JSON | https://www.reddit.com/r/*/hot.json | No | Public subreddit data |
+| OpenSky | https://opensky-network.org/ | Optional | ADS-B aircraft tracking |
+| NASA FIRMS | https://firms.modaps.eosdis.nasa.gov/ | Free key | Wildfire hotspots |
+| OpenWeatherMap | https://openweathermap.org/ | Free key | Global weather data |
+| AlienVault OTX | https://otx.alienvault.com/ | Free key | Threat intelligence |
 
 ## Changelog
 
-### v5.1.0 (2026-03-31)
+### v6.1.0 (2026-04-02)
+- Production-grade rewrite: canonical event schema, provenance tracking, confidence metadata
+- Removed all hardcoded secrets from ecosystem.config.cjs
+- Fixed malformed package.json (was invalid JSON with comments)
+- Complete style.css rewrite to match v6 frontend (was v4 with missing styles)
+- Added CISA KEV endpoint with GitHub mirror fallback
+- Added `/api/fusion/viewport` for viewport-filtered zone queries
+- Added ACLED_EMAIL binding for proper ACLED API authentication
+- Added CelesTrak TLE parsing with SGP4 orbital propagation
+- Added ReliefWeb parser with country geocoding
+- Added Shodan result parser for exposed ICS/SCADA
+- Added satellite imagery engine (NASA GIBS + Sentinel-2) with date picker
+- Structured error responses for all upstream failures
+- Inferred locations explicitly marked and visually down-weighted (dashed markers)
+- Inspector panel with full provenance, confidence badges, source URLs
+- Cyber/GNSS/Social domain-specific inspector cards
+- Source health monitoring in SOURCES tab
 
-#### New Feature: Satellite Imagery Engine
-- **NASA GIBS integration** — 4 daily satellite imagery products (MODIS Terra/Aqua True Color, VIIRS SNPP True Color, VIIRS Nighttime Lights)
-- **EOX Sentinel-2** — 10m/px cloud-free annual mosaic (highest-resolution free global imagery)
-- **Satellite imagery panel** — Date picker with prev/next navigation, product selection with active/daily/static badges
-- **Active imagery indicator** — Floating bar showing current satellite layer and date
-- **Header SAT button** — Quick-toggle access with active state highlighting
-- **S keyboard shortcut** — Toggle satellite imagery panel
-- **Dark label overlay** — CartoDB dark labels automatically applied on satellite tiles for readability
-- No API keys required — all imagery sources are free and open
-- Health endpoint updated to v5.1.0 with 13 domains + satellite_imagery metadata
+### v5.1.0 (2026-03-31)
+- NASA GIBS satellite imagery (MODIS Terra/Aqua, VIIRS SNPP, Nighttime Lights)
+- EOX Sentinel-2 Cloudless tiles
+- Satellite imagery HUD panel with date picker
 
 ### v5.0.0 (2026-03-29)
+- Cybersecurity layer (AlienVault OTX, URLhaus, ThreatFox)
+- GPS Jamming layer (15 curated hotspots + GDELT GPS news)
+- Social Media OSINT layer (Reddit conflict subreddits)
+- Enhanced GEO_DB with fusion zones
+- Improved threat scoring
 
-#### New Layers
-- **Cybersecurity (Enhanced)**: Added AlienVault OTX (threat pulses, IOCs, MITRE ATT&CK), URLhaus (malware URLs), ThreatFox (IOC feed) — all free, no key required for basic access
-- **GPS Jamming Anomalies**: 15 curated hotspots from GPSJam.org, Eurocontrol, EASA, C4ADS, OPSGROUP with severity ratings and confidence scores + GDELT GPS news enrichment + visual radius circles on map
-- **Social Media Conflict OSINT**: Reddit integration (5 subreddits), automatic geocoding, video link extraction, score ranking
+## License
 
-#### Improvements
-- GEO_DB expanded from ~60 to 91 entries (added Baltic, Arctic, cyber-relevant locations)
-- Threat scoring enhanced for GPS jamming (+20) and social media (+10) entities
-- Frontend layer count: 20+ layers across 12 domains
-- HUD stats ring shows GPS and SOC counters
-- Phased loading extended to 5 phases for optimal UX
-
-#### Bug Fixes (v5.0.0)
-- Fixed Shodan fallback logic (removed unused `searchFailed` variable)
-- Fixed OTX API triple-fallback (subscribed → activity → search)
-- Fixed Reddit User-Agent to avoid 429 rate limiting
-- Added GPS jamming zone radius circles with severity coloring
-- GPS jamming circles properly toggle with layer visibility
-- Added GDELT GPS news enrichment to jamming endpoint
-
-### v4.0.2 (2026-03-25)
-- GDELT timeout/retry reduction, parallel fetch, cycle cooldown
-- Shodan JSON parse crash fix, CelesTrak prefix collision fix
-
-### v4.0.1 (2026-03-25)
-- GDELT prefix collision, fetch cascade, Shodan/ADS-B fallbacks
-
-## Deployment
-
-- **Platform**: Cloudflare Pages
-- **Status**: Active (sandbox)
-- **Version**: 5.1.0
-- **Last Updated**: 2026-03-31
+Open source. Free for educational and research use.

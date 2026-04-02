@@ -1,26 +1,20 @@
 /**
- * SENTINEL OS v5.0 — Global Multi-Domain Situational Awareness Platform
- * Hono Backend + API Proxy for Cloudflare Pages Edge Runtime
- * 
- * Architecture: Edge BFF (Backend-for-Frontend) pattern
- * - All keyed API calls route through /api/proxy to protect credentials
- * - GDELT article-based conflict intel with geocoding + retry + stagger
- * - OWM multi-city global weather via dedicated endpoint
- * - AVWX METAR multi-airport weather
- * - AISStream.io config endpoint (client WS)
- * - Shodan host search endpoint
- * - NewsAPI conflict intel endpoint
- * - ReliefWeb disaster endpoint (CORS-free proxy)
- * - ACLED conflict data endpoint
- * - AlienVault OTX cyber threat intel endpoint
- * - URLhaus malware URL tracking endpoint
- * - GPS Jamming anomaly detection + known hotspots
- * - Social media conflict OSINT (Reddit)
- * - Multi-domain fusion correlation engine
+ * SENTINEL OS v6.1 — Global Multi-Domain Situational Awareness Platform
+ * Secure Edge BFF (Backend-for-Frontend) on Cloudflare Pages
+ *
+ * Architecture:
+ *   - All keyed API calls route through server-side proxy — browser NEVER sees secrets
+ *   - Every response normalizes into canonical event schema with provenance + confidence
+ *   - Geocoded/inferred locations are explicitly marked and down-weighted
+ *   - Graceful failure objects returned on upstream errors
+ *
+ * Domains: aviation · maritime · orbital · seismic · wildfire · weather ·
+ *          conflict · disaster · cyber · nuclear · gnss · social · imagery
  */
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 
+// ─── Environment bindings (Cloudflare secrets / .dev.vars) ───────────────────
 type Bindings = {
   NASA_FIRMS_KEY?: string
   OWM_KEY?: string
@@ -33,17 +27,70 @@ type Bindings = {
   NEWS_API_KEY?: string
   AISSTREAM_KEY?: string
   OTX_KEY?: string
-  REDDIT_CLIENT_ID?: string
-  REDDIT_SECRET?: string
+  ACLED_KEY?: string
+  ACLED_EMAIL?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
-
 app.use('/api/*', cors())
 
-/* ═══════════════════════════════════════════════════════════════
-   GEOPOLITICAL GEOCODING — Map country/region names to coordinates
-═══════════════════════════════════════════════════════════════ */
+const VERSION = '6.1.0'
+const UA = `SENTINEL-OS/${VERSION} (OSINT Platform)`
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANONICAL EVENT SCHEMA HELPERS
+// Every record reaching the client conforms to this shape.
+// ═══════════════════════════════════════════════════════════════════════════════
+interface CanonicalEvent {
+  id: string
+  entity_type: string
+  source: string
+  source_url: string
+  title: string
+  description: string
+  lat: number | null
+  lon: number | null
+  altitude: number | null
+  velocity: number | null
+  heading: number | null
+  timestamp: string
+  observed_at: string
+  confidence: number          // 0-100
+  severity: string            // critical | high | medium | low | info
+  risk_score: number          // 0-100
+  region: string
+  tags: string[]
+  correlations: string[]
+  metadata: Record<string, unknown>
+  provenance: string          // e.g. "direct-api" | "geocoded-inferred" | "curated-reference"
+}
+
+function evt(partial: Partial<CanonicalEvent> & { id: string; entity_type: string; source: string; title: string }): CanonicalEvent {
+  return {
+    source_url: '',
+    description: '',
+    lat: null, lon: null, altitude: null, velocity: null, heading: null,
+    timestamp: new Date().toISOString(),
+    observed_at: new Date().toISOString(),
+    confidence: 50,
+    severity: 'info',
+    risk_score: 0,
+    region: '',
+    tags: [],
+    correlations: [],
+    metadata: {},
+    provenance: 'direct-api',
+    ...partial,
+  }
+}
+
+function upstreamError(upstream: string, status: number, message: string) {
+  return { _upstream_error: true, upstream, status, message, events: [] as CanonicalEvent[], timestamp: new Date().toISOString() }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GEO_DB — deterministic geocoding from text (low-confidence, labeled "inferred")
+// ═══════════════════════════════════════════════════════════════════════════════
 const GEO_DB: Record<string, { lat: number; lon: number; region: string }> = {
   'ukraine': { lat: 48.4, lon: 31.2, region: 'Eastern Europe' },
   'russia': { lat: 55.8, lon: 37.6, region: 'Eastern Europe' },
@@ -90,76 +137,73 @@ const GEO_DB: Record<string, { lat: number; lon: number; region: string }> = {
   'south china sea': { lat: 13.5, lon: 115.0, region: 'Indo-Pacific' },
   'persian gulf': { lat: 27.0, lon: 51.0, region: 'Middle East' },
   'sahel': { lat: 14.0, lon: 2.0, region: 'Africa' },
-  'haiti': { lat: 18.9, lon: -72.3, region: 'Caribbean' },
-  'venezuela': { lat: 6.4, lon: -66.6, region: 'South America' },
-  'cuba': { lat: 21.5, lon: -79.9, region: 'Caribbean' },
-  'mexico': { lat: 23.6, lon: -102.6, region: 'North America' },
-  'qatar': { lat: 25.3, lon: 51.2, region: 'Middle East' },
-  'saudi': { lat: 24.7, lon: 46.7, region: 'Middle East' },
-  'egypt': { lat: 26.8, lon: 30.8, region: 'Middle East' },
-  'turkey': { lat: 39.9, lon: 32.9, region: 'Middle East' },
-  'natanz': { lat: 33.7, lon: 51.7, region: 'Middle East' },
-  'isfahan': { lat: 32.7, lon: 51.7, region: 'Middle East' },
-  'darfur': { lat: 13.5, lon: 25.3, region: 'Africa' },
-  'kharkiv': { lat: 49.9, lon: 36.3, region: 'Eastern Europe' },
-  'odesa': { lat: 46.5, lon: 30.7, region: 'Eastern Europe' },
-  'kyiv': { lat: 50.4, lon: 30.5, region: 'Eastern Europe' },
-  'donbas': { lat: 48.0, lon: 38.0, region: 'Eastern Europe' },
-  'zaporizhzhia': { lat: 47.8, lon: 35.2, region: 'Eastern Europe' },
-  // v5.0 additions for cyber/GPS/social layers
   'baltic': { lat: 56.0, lon: 22.0, region: 'Europe' },
   'kaliningrad': { lat: 54.7, lon: 20.5, region: 'Eastern Europe' },
   'arctic': { lat: 71.0, lon: 25.0, region: 'Arctic' },
   'mediterranean': { lat: 35.0, lon: 18.0, region: 'Europe' },
-  'atlantic': { lat: 45.0, lon: -30.0, region: 'Atlantic' },
-  'pacific': { lat: 20.0, lon: -150.0, region: 'Pacific' },
   'finland': { lat: 61.5, lon: 25.7, region: 'Europe' },
   'poland': { lat: 51.9, lon: 19.1, region: 'Europe' },
   'romania': { lat: 45.9, lon: 25.0, region: 'Europe' },
   'georgia': { lat: 42.3, lon: 43.4, region: 'Eastern Europe' },
-  'armenia': { lat: 40.0, lon: 45.0, region: 'Middle East' },
-  'azerbaijan': { lat: 40.4, lon: 49.9, region: 'Middle East' },
   'singapore': { lat: 1.35, lon: 103.82, region: 'Indo-Pacific' },
-  'malacca': { lat: 2.2, lon: 102.2, region: 'Indo-Pacific' },
   'germany': { lat: 51.2, lon: 10.4, region: 'Europe' },
   'france': { lat: 46.2, lon: 2.2, region: 'Europe' },
   'united kingdom': { lat: 55.4, lon: -3.4, region: 'Europe' },
   'uk': { lat: 55.4, lon: -3.4, region: 'Europe' },
   'london': { lat: 51.5, lon: -0.1, region: 'Europe' },
   'new york': { lat: 40.7, lon: -74.0, region: 'North America' },
-  'california': { lat: 36.8, lon: -119.4, region: 'North America' },
-  'texas': { lat: 31.0, lon: -100.0, region: 'North America' },
   'australia': { lat: -25.3, lon: 133.8, region: 'Indo-Pacific' },
   'brazil': { lat: -14.2, lon: -51.9, region: 'South America' },
-  'colombia': { lat: 4.6, lon: -74.1, region: 'South America' },
-  'drone': { lat: 48.5, lon: 37.0, region: 'Eastern Europe' },
-  'ransomware': { lat: 40.7, lon: -74.0, region: 'Global' },
-  'apt': { lat: 39.9, lon: 116.4, region: 'Indo-Pacific' },
-  'hacker': { lat: 55.8, lon: 37.6, region: 'Global' },
-  'spyware': { lat: 31.0, lon: 34.8, region: 'Middle East' },
+  'kyiv': { lat: 50.4, lon: 30.5, region: 'Eastern Europe' },
+  'kharkiv': { lat: 49.9, lon: 36.3, region: 'Eastern Europe' },
+  'odesa': { lat: 46.5, lon: 30.7, region: 'Eastern Europe' },
+  'donbas': { lat: 48.0, lon: 38.0, region: 'Eastern Europe' },
+  'zaporizhzhia': { lat: 47.8, lon: 35.2, region: 'Eastern Europe' },
 }
 
-function geocodeFromText(title: string, domain: string): { lat: number; lon: number; region: string; matchedKey: string } | null {
-  const lower = (title + ' ' + domain).toLowerCase()
-  let bestMatch: { key: string; entry: typeof GEO_DB[string] } | null = null
+/** Match text against GEO_DB. Returns low-confidence inferred location. */
+function geocodeFromText(text: string): { lat: number; lon: number; region: string; matched: string; confidence: number } | null {
+  const lower = text.toLowerCase()
+  let best: { key: string; entry: typeof GEO_DB[string] } | null = null
   let bestLen = 0
   for (const [key, entry] of Object.entries(GEO_DB)) {
     if (lower.includes(key) && key.length > bestLen) {
-      bestMatch = { key, entry }
+      best = { key, entry }
       bestLen = key.length
     }
   }
-  if (bestMatch) {
-    const jitter = () => (Math.random() - 0.5) * 1.5
-    return { lat: bestMatch.entry.lat + jitter(), lon: bestMatch.entry.lon + jitter(), region: bestMatch.entry.region, matchedKey: bestMatch.key }
-  }
-  return null
+  if (!best) return null
+  // Jitter coordinates to avoid false precision
+  const jitter = () => (Math.random() - 0.5) * 1.2
+  // Confidence: longer match = slightly higher, but never above 35 (it's still text-inferred)
+  const confidence = Math.min(35, 15 + bestLen * 2)
+  return { lat: best.entry.lat + jitter(), lon: best.entry.lon + jitter(), region: best.entry.region, matched: best.key, confidence }
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   API PROXY — Secure edge-side credential management
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// SAFE FETCH HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 12000): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { ...opts, signal: controller.signal, headers: { 'User-Agent': UA, ...((opts.headers as Record<string, string>) || {}) } })
+    return res
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
+async function safeJson(url: string, opts: RequestInit = {}, timeoutMs = 12000): Promise<any> {
+  const res = await safeFetch(url, opts, timeoutMs)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// API PROXY — Secure server-side credential management
+// Browser sends target name → server resolves URL + injects secret
+// ═══════════════════════════════════════════════════════════════════════════════
 interface TargetConfig {
   url: string | ((key: string, params?: Record<string, string>) => string)
   secret?: keyof Bindings
@@ -172,926 +216,621 @@ interface TargetConfig {
 }
 
 const TARGETS: Record<string, TargetConfig> = {
-  // ── AVIATION ──
-  opensky: {
-    url: 'https://opensky-network.org/api/states/all',
-    timeout: 15000,
-    fallbackUrl: 'https://opensky-network.org/api/states/all?lamin=-60&lamax=60&lomin=-180&lomax=180',
-  },
-  military: {
-    url: 'https://adsbexchange-com1.p.rapidapi.com/v2/mil/',
-    secret: 'RAPIDAPI_KEY',
-    authType: 'rapidapi',
-    rapidApiHost: 'adsbexchange-com1.p.rapidapi.com',
-    timeout: 10000,
-  },
-
-  // ── MARITIME ──
-  gfw_fishing: {
-    url: 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-fishing-events:latest&limit=50&offset=0',
-    secret: 'GFW_TOKEN',
-    authType: 'bearer',
-    timeout: 14000,
-  },
-  gfw_gap: {
-    url: 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-gaps-events:latest&limit=50&offset=0',
-    secret: 'GFW_TOKEN',
-    authType: 'bearer',
-    timeout: 14000,
-  },
-
-  // ── ENVIRONMENTAL ──
-  firms: {
-    url: (key: string) => `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${key}/VIIRS_SNPP_NRT/world/1`,
-    secret: 'NASA_FIRMS_KEY',
-    timeout: 18000,
-    responseType: 'text',
-  },
-
-  // ── SPACE ──
-  n2yo: {
-    url: (key: string) => `https://api.n2yo.com/rest/v1/satellite/above/0/0/0/80/0?apiKey=${key}`,
-    secret: 'N2YO_KEY',
-    timeout: 10000,
-  },
-
-  // ── DISASTER ──
-  gdacs: {
-    url: 'https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?eventlist=EQ,TC,FL,VO,TS&alertlevel=Green;Orange;Red',
-    timeout: 16000,
-  },
-  reliefweb: {
-    url: 'https://api.reliefweb.int/v1/disasters?appname=SMansabdar-SentinelXresearchdashboard-7f9c2a&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date',
-    timeout: 14000,
-  },
-
-  // ── CONFLICT INTEL (GDELT Articles → Geocoded events) ──
-  gdelt_conflict: {
-    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=military+attack+airstrike+bombing+strike+conflict&mode=artlist&maxrecords=50&format=json&timespan=48h&sourcelang=english',
-    timeout: 10000,
-  },
-  gdelt_maritime: {
-    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=navy+warship+maritime+vessel+seized+blockade&mode=artlist&maxrecords=30&format=json&timespan=48h&sourcelang=english',
-    timeout: 10000,
-  },
-  gdelt_nuclear: {
-    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=nuclear+missile+ICBM+warhead+uranium+enrichment&mode=artlist&maxrecords=25&format=json&timespan=72h&sourcelang=english',
-    timeout: 10000,
-  },
-  gdelt_cyber: {
-    url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=cyberattack+ransomware+hacking+breach+APT+infrastructure&mode=artlist&maxrecords=25&format=json&timespan=48h&sourcelang=english',
-    timeout: 10000,
-  },
-
-  // ── SHODAN ──
-  shodan_search: {
-    url: (key: string, params?: Record<string, string>) => {
-      const query = params?.query || 'port:502 scada'
-      return `https://api.shodan.io/shodan/host/search?key=${key}&query=${encodeURIComponent(query)}&page=1`
-    },
-    secret: 'SHODAN_KEY',
-    timeout: 12000,
-  },
+  opensky: { url: 'https://opensky-network.org/api/states/all', timeout: 15000, fallbackUrl: 'https://opensky-network.org/api/states/all?lamin=-60&lamax=60&lomin=-180&lomax=180' },
+  military: { url: 'https://adsbexchange-com1.p.rapidapi.com/v2/mil/', secret: 'RAPIDAPI_KEY', authType: 'rapidapi', rapidApiHost: 'adsbexchange-com1.p.rapidapi.com', timeout: 10000 },
+  gfw_fishing: { url: 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-fishing-events:latest&limit=50&offset=0', secret: 'GFW_TOKEN', authType: 'bearer', timeout: 14000 },
+  gfw_gap: { url: 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-gaps-events:latest&limit=50&offset=0', secret: 'GFW_TOKEN', authType: 'bearer', timeout: 14000 },
+  firms: { url: (key: string) => `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${key}/VIIRS_SNPP_NRT/world/1`, secret: 'NASA_FIRMS_KEY', timeout: 18000, responseType: 'text' },
+  n2yo: { url: (key: string) => `https://api.n2yo.com/rest/v1/satellite/above/0/0/0/80/0?apiKey=${key}`, secret: 'N2YO_KEY', timeout: 10000 },
+  gdacs: { url: 'https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?eventlist=EQ,TC,FL,VO,TS&alertlevel=Green;Orange;Red', timeout: 16000 },
+  reliefweb: { url: 'https://api.reliefweb.int/v1/disasters?appname=sentinel-os-osint&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date', timeout: 14000 },
+  gdelt_conflict: { url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=military+attack+airstrike+bombing+conflict&mode=artlist&maxrecords=50&format=json&timespan=48h&sourcelang=english', timeout: 10000 },
+  gdelt_maritime: { url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=navy+warship+maritime+vessel+blockade&mode=artlist&maxrecords=30&format=json&timespan=48h&sourcelang=english', timeout: 10000 },
+  gdelt_nuclear: { url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=nuclear+missile+ICBM+warhead+enrichment&mode=artlist&maxrecords=25&format=json&timespan=72h&sourcelang=english', timeout: 10000 },
+  gdelt_cyber: { url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=cyberattack+ransomware+hacking+breach+APT&mode=artlist&maxrecords=25&format=json&timespan=48h&sourcelang=english', timeout: 10000 },
 }
 
 app.post('/api/proxy', async (c) => {
-  const { target, params } = await c.req.json<{ target: string; params?: Record<string, string> }>()
-
+  const body = await c.req.json<{ target: string; params?: Record<string, string> }>().catch(() => ({ target: '', params: {} }))
+  const { target, params } = body
   const config = TARGETS[target]
-  if (!config) {
-    return c.json({ _upstream_error: true, status: 400, message: `Unknown target: ${target}` })
-  }
+  if (!config) return c.json(upstreamError(target, 400, `Unknown target: ${target}`))
 
   const secret = config.secret ? (c.env[config.secret] || '') : ''
-
   let url: string
-  if (typeof config.url === 'function') {
-    url = config.url(secret, params)
-  } else {
-    url = config.url
-  }
+  if (typeof config.url === 'function') { url = config.url(secret, params) } else { url = config.url }
 
-  // Append date params for GFW endpoints
   if (target.startsWith('gfw_') && params?.startDate && params?.endDate) {
-    const u = new URL(url)
-    u.searchParams.set('start-date', params.startDate)
-    u.searchParams.set('end-date', params.endDate)
-    url = u.toString()
+    const u = new URL(url); u.searchParams.set('start-date', params.startDate); u.searchParams.set('end-date', params.endDate); url = u.toString()
   }
 
-  const fetchHeaders: Record<string, string> = {
-    'User-Agent': 'SENTINEL-OS/5.0 (Global OSINT Platform)',
-  }
-  if (config.authType === 'bearer' && secret) {
-    fetchHeaders['Authorization'] = `Bearer ${secret}`
-  }
-  if (config.authType === 'rapidapi' && secret) {
-    fetchHeaders['X-RapidAPI-Key'] = secret
-    fetchHeaders['X-RapidAPI-Host'] = config.rapidApiHost || ''
-  }
-  if (config.authType === 'header' && config.headerName && secret) {
-    fetchHeaders[config.headerName] = secret
-  }
+  const headers: Record<string, string> = { 'User-Agent': UA }
+  if (config.authType === 'bearer' && secret) headers['Authorization'] = `Bearer ${secret}`
+  if (config.authType === 'rapidapi' && secret) { headers['X-RapidAPI-Key'] = secret; headers['X-RapidAPI-Host'] = config.rapidApiHost || '' }
+  if (config.authType === 'header' && config.headerName && secret) headers[config.headerName] = secret
 
   try {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), config.timeout || 15000)
-
     let res: Response
-    try {
-      res = await fetch(url, { headers: fetchHeaders, signal: controller.signal })
-    } catch (primaryErr) {
+    try { res = await safeFetch(url, { headers }, config.timeout || 15000) }
+    catch (err) {
       if (config.fallbackUrl) {
-        try {
-          res = await fetch(config.fallbackUrl, { headers: fetchHeaders, signal: AbortSignal.timeout(8000) })
-        } catch {
-          clearTimeout(timeoutId)
-          return c.json({ _upstream_error: true, status: 0, message: 'Primary and fallback failed' })
-        }
-      } else {
-        clearTimeout(timeoutId)
-        return c.json({ _upstream_error: true, status: 0, message: String(primaryErr) })
-      }
+        try { res = await safeFetch(config.fallbackUrl, { headers }, 8000) } catch { return c.json(upstreamError(target, 0, 'Primary and fallback failed')) }
+      } else { return c.json(upstreamError(target, 0, String(err))) }
     }
-    clearTimeout(timeoutId)
-
-    if (!res!.ok) {
-      const body = await res!.text()
-      return c.json({ _upstream_error: true, status: res!.status, message: body.slice(0, 400) })
-    }
-
-    if (config.responseType === 'text') {
-      const text = await res!.text()
-      return c.text(text)
-    }
-
-    const data = await res!.json()
-    return c.json(data)
-  } catch (error) {
-    return c.json({ _upstream_error: true, status: 0, message: String(error) })
-  }
+    if (!res!.ok) { const body = await res!.text(); return c.json(upstreamError(target, res!.status, body.slice(0, 400))) }
+    if (config.responseType === 'text') return c.text(await res!.text())
+    return c.json(await res!.json())
+  } catch (error) { return c.json(upstreamError(target, 0, String(error))) }
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   OWM MULTI-CITY WEATHER — Fetch severe weather from major cities
-   Free OWM plan: use lat/lon individual queries, merge to list
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEATHER — OWM multi-city
+// Requires: OWM_KEY (free at https://openweathermap.org/appid)
+// ═══════════════════════════════════════════════════════════════════════════════
+const WEATHER_CITIES = [
+  { name: 'Tokyo', lat: 35.68, lon: 139.69 }, { name: 'Mumbai', lat: 19.08, lon: 72.88 },
+  { name: 'Manila', lat: 14.60, lon: 120.98 }, { name: 'Houston', lat: 29.76, lon: -95.37 },
+  { name: 'Miami', lat: 25.76, lon: -80.19 }, { name: 'Dhaka', lat: 23.81, lon: 90.41 },
+  { name: 'Lagos', lat: 6.52, lon: 3.37 }, { name: 'Shanghai', lat: 31.23, lon: 121.47 },
+  { name: 'Cairo', lat: 30.04, lon: 31.24 }, { name: 'London', lat: 51.51, lon: -0.13 },
+  { name: 'Moscow', lat: 55.76, lon: 37.62 }, { name: 'Taipei', lat: 25.03, lon: 121.57 },
+  { name: 'Singapore', lat: 1.35, lon: 103.82 }, { name: 'Jakarta', lat: -6.21, lon: 106.85 },
+  { name: 'Dubai', lat: 25.20, lon: 55.27 }, { name: 'Nairobi', lat: -1.29, lon: 36.82 },
+  { name: 'Sydney', lat: -33.87, lon: 151.21 }, { name: 'Anchorage', lat: 61.22, lon: -149.90 },
+  { name: 'Sao Paulo', lat: -23.55, lon: -46.63 }, { name: 'Karachi', lat: 24.86, lon: 67.01 },
+]
+
 app.get('/api/weather/global', async (c) => {
   const key = c.env.OWM_KEY
-  if (!key) return c.json({ list: [], error: 'OWM_KEY not set' })
-
-  // 20 major cities in storm-prone regions worldwide
-  const cities = [
-    { name: 'Tokyo', lat: 35.68, lon: 139.69 },
-    { name: 'Mumbai', lat: 19.08, lon: 72.88 },
-    { name: 'Manila', lat: 14.60, lon: 120.98 },
-    { name: 'Houston', lat: 29.76, lon: -95.37 },
-    { name: 'Miami', lat: 25.76, lon: -80.19 },
-    { name: 'Dhaka', lat: 23.81, lon: 90.41 },
-    { name: 'Lagos', lat: 6.52, lon: 3.37 },
-    { name: 'Shanghai', lat: 31.23, lon: 121.47 },
-    { name: 'Karachi', lat: 24.86, lon: 67.01 },
-    { name: 'Cairo', lat: 30.04, lon: 31.24 },
-    { name: 'London', lat: 51.51, lon: -0.13 },
-    { name: 'Moscow', lat: 55.76, lon: 37.62 },
-    { name: 'Taipei', lat: 25.03, lon: 121.57 },
-    { name: 'Singapore', lat: 1.35, lon: 103.82 },
-    { name: 'Jakarta', lat: -6.21, lon: 106.85 },
-    { name: 'Sao Paulo', lat: -23.55, lon: -46.63 },
-    { name: 'Dubai', lat: 25.20, lon: 55.27 },
-    { name: 'Nairobi', lat: -1.29, lon: 36.82 },
-    { name: 'Sydney', lat: -33.87, lon: 151.21 },
-    { name: 'Anchorage', lat: 61.22, lon: -149.90 },
-  ]
-
+  if (!key) return c.json(upstreamError('owm', 0, 'OWM_KEY not configured. Get a free key at https://openweathermap.org/appid'))
   try {
     const results = await Promise.allSettled(
-      cities.map(city =>
-        fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${city.lat}&lon=${city.lon}&appid=${key}&units=metric`, {
-          signal: AbortSignal.timeout(8000)
-        }).then(r => r.json()).then(d => ({ ...d, _city: city.name }))
+      WEATHER_CITIES.map(city =>
+        safeJson(`https://api.openweathermap.org/data/2.5/weather?lat=${city.lat}&lon=${city.lon}&appid=${key}&units=metric`, {}, 8000)
+          .then(d => ({ ...d, _city: city.name }))
       )
     )
-
-    const list = results
-      .filter(r => r.status === 'fulfilled' && r.value?.coord)
-      .map(r => (r as PromiseFulfilledResult<any>).value)
-
-    return c.json({ list, count: list.length })
-  } catch (error) {
-    return c.json({ list: [], error: String(error) })
-  }
+    const list = results.filter(r => r.status === 'fulfilled' && (r as any).value?.coord).map(r => (r as PromiseFulfilledResult<any>).value)
+    return c.json({ events: list, count: list.length, source: 'openweathermap' })
+  } catch (error) { return c.json(upstreamError('owm', 0, String(error))) }
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   AVWX MULTI-AIRPORT METAR — Fetch weather from major airports
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// AVWX — METAR multi-airport
+// Requires: AVWX_KEY (free at https://avwx.rest/)
+// ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/avwx/global', async (c) => {
   const key = c.env.AVWX_KEY
-  if (!key) return c.json({ stations: [], error: 'AVWX_KEY not set' })
-
-  const airports = ['KJFK','EGLL','RJTT','VHHH','LFPG','EDDF','OMDB','WSSS','YSSY','SBGR','FACT','UUEE','RPLL','VIDP','OERK']
-
+  if (!key) return c.json(upstreamError('avwx', 0, 'AVWX_KEY not configured. Get a free key at https://avwx.rest/'))
+  const airports = ['KJFK', 'EGLL', 'RJTT', 'VHHH', 'LFPG', 'EDDF', 'OMDB', 'WSSS', 'YSSY', 'SBGR', 'FACT', 'UUEE', 'RPLL', 'VIDP', 'OERK']
   try {
     const results = await Promise.allSettled(
       airports.map(icao =>
-        fetch(`https://avwx.rest/api/metar/${icao}?format=json&onfail=cache`, {
-          headers: { 'Authorization': `Bearer ${key}` },
-          signal: AbortSignal.timeout(6000)
-        }).then(r => r.json())
+        safeJson(`https://avwx.rest/api/metar/${icao}?format=json&onfail=cache`, { headers: { 'Authorization': `Bearer ${key}` } }, 6000)
       )
     )
-
-    const stations = results
-      .filter(r => r.status === 'fulfilled' && r.value?.station)
-      .map(r => (r as PromiseFulfilledResult<any>).value)
-
-    return c.json({ stations, count: stations.length })
-  } catch (error) {
-    return c.json({ stations: [], error: String(error) })
-  }
+    const stations = results.filter(r => r.status === 'fulfilled' && (r as any).value?.station).map(r => (r as PromiseFulfilledResult<any>).value)
+    return c.json({ stations, count: stations.length, source: 'avwx' })
+  } catch (error) { return c.json(upstreamError('avwx', 0, String(error))) }
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   AIS MARITIME — Config endpoint for client-side WebSocket
-═══════════════════════════════════════════════════════════════ */
-app.get('/api/ais/config', async (c) => {
-  const key = c.env.AISSTREAM_KEY
-  return c.json({ key: key || '' })
+// ═══════════════════════════════════════════════════════════════════════════════
+// AIS CONFIG — expose ONLY boolean availability, never the raw key
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/ais/config', (c) => {
+  return c.json({ available: !!(c.env.AISSTREAM_KEY), note: 'AIS WebSocket connection handled server-side. Key never sent to browser.' })
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   SHODAN — Internet exposure search
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHODAN — Internet exposure
+// Requires: SHODAN_KEY (free at https://shodan.io — limited on free plan)
+// ═══════════════════════════════════════════════════════════════════════════════
 app.post('/api/shodan/search', async (c) => {
   const key = c.env.SHODAN_KEY
-  if (!key) return c.json({ matches: [], error: 'SHODAN_KEY not set' })
-
-  const { query } = await c.req.json<{ query?: string }>()
+  if (!key) return c.json(upstreamError('shodan', 0, 'SHODAN_KEY not set. Get a free API key at https://account.shodan.io/'))
+  const { query } = await c.req.json<{ query?: string }>().catch(() => ({ query: 'port:502 scada' }))
   const q = query || 'port:502 scada'
-
   try {
-    // Try primary search endpoint first
-    try {
-      const res = await fetch(
-        `https://api.shodan.io/shodan/host/search?key=${key}&query=${encodeURIComponent(q)}&page=1`,
-        { signal: AbortSignal.timeout(10000) }
-      )
-      if (res.ok) {
-        const ct = res.headers.get('content-type') || ''
-        if (ct.includes('application/json')) {
-          const data = await res.json() as any
-          return c.json({ matches: data.matches || [], total: data.total || 0, source: 'search' })
-        }
-      }
-    } catch {
-      // Search failed, fall through to fallback
+    const res = await safeFetch(`https://api.shodan.io/shodan/host/search?key=${key}&query=${encodeURIComponent(q)}&page=1`, {}, 10000)
+    if (res.ok) {
+      const data = await res.json() as any
+      return c.json({ matches: data.matches || [], total: data.total || 0, source: 'shodan-search' })
     }
-
-    // Search failed or not available — try fallback methods
-
-    let infoData: any = null
-    try {
-      const infoRes = await fetch(
-        `https://api.shodan.io/api-info?key=${key}`,
-        { signal: AbortSignal.timeout(8000) }
-      )
-      if (infoRes.ok) {
-        const ct = infoRes.headers.get('content-type') || ''
-        if (ct.includes('application/json')) infoData = await infoRes.json()
-      }
-    } catch {}
-
-    let dnsData: any = {}
-    try {
-      const dnsRes = await fetch(
-        `https://api.shodan.io/dns/resolve?hostnames=scada.shodan.io,ics-radar.shodan.io&key=${key}`,
-        { signal: AbortSignal.timeout(8000) }
-      )
-      if (dnsRes.ok) {
-        const ct = dnsRes.headers.get('content-type') || ''
-        if (ct.includes('application/json')) dnsData = await dnsRes.json()
-      }
-    } catch {}
-
-    const syntheticMatches: any[] = []
-    for (const [hostname, ip] of Object.entries(dnsData)) {
-      if (!ip) continue
-      try {
-        const hostRes = await fetch(
-          `https://api.shodan.io/shodan/host/${ip}?key=${key}`,
-          { signal: AbortSignal.timeout(6000) }
-        )
-        if (hostRes.ok) {
-          const ct = hostRes.headers.get('content-type') || ''
-          if (ct.includes('json')) {
-            const hostData = await hostRes.json() as any
-            if (hostData.data) {
-              hostData.data.slice(0, 5).forEach((svc: any) => {
-                syntheticMatches.push({
-                  ip_str: hostData.ip_str || String(ip),
-                  port: svc.port || 0,
-                  product: svc.product || hostname,
-                  org: hostData.org || 'Unknown',
-                  os: hostData.os || 'N/A',
-                  location: {
-                    latitude: hostData.latitude || 0,
-                    longitude: hostData.longitude || 0,
-                    country_name: hostData.country_name || 'Unknown',
-                    city: hostData.city || 'N/A'
-                  },
-                  asn: hostData.asn || 'N/A',
-                })
-              })
-            }
+    // Free plan fallback: host lookup
+    const dnsRes = await safeFetch(`https://api.shodan.io/dns/resolve?hostnames=scada.shodan.io,ics-radar.shodan.io&key=${key}`, {}, 8000)
+    if (dnsRes.ok) {
+      const dnsData = await dnsRes.json() as Record<string, string>
+      const matches: any[] = []
+      for (const [hostname, ip] of Object.entries(dnsData)) {
+        if (!ip) continue
+        try {
+          const hostData = await safeJson(`https://api.shodan.io/shodan/host/${ip}?key=${key}`, {}, 6000)
+          if (hostData?.data) {
+            hostData.data.slice(0, 5).forEach((svc: any) => {
+              matches.push({ ip_str: hostData.ip_str || String(ip), port: svc.port || 0, product: svc.product || hostname, org: hostData.org || '', location: { latitude: hostData.latitude || 0, longitude: hostData.longitude || 0, country_name: hostData.country_name || '', city: hostData.city || '' } })
+            })
           }
-        }
-      } catch {}
+        } catch { /* skip host */ }
+      }
+      if (matches.length > 0) return c.json({ matches, total: matches.length, source: 'shodan-host-lookup' })
     }
+    return c.json({ matches: [], total: 0, note: 'Shodan free plan has limited search. Upgrade at https://shodan.io/store', source: 'shodan' })
+  } catch (error) { return c.json(upstreamError('shodan', 0, String(error))) }
+})
 
-    if (syntheticMatches.length > 0) {
-      return c.json({ matches: syntheticMatches, total: syntheticMatches.length, source: 'host-lookup' })
-    }
-
-    return c.json({
-      matches: [],
-      total: 0,
-      error: 'Shodan free plan: search requires membership upgrade',
-      plan: infoData?.plan || 'oss',
-      note: 'Free Shodan plan has limited search access. Upgrade at https://shodan.io/store'
-    })
-  } catch (error) {
-    return c.json({ matches: [], error: String(error) })
+// ═══════════════════════════════════════════════════════════════════════════════
+// RELIEFWEB — UN OCHA disaster data
+// Free, no key required: https://api.reliefweb.int/
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/reliefweb/disasters', async (c) => {
+  try {
+    const data = await safeJson('https://api.reliefweb.int/v1/disasters?appname=sentinel-os-osint&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date', {}, 12000)
+    return c.json(data)
+  } catch {
+    return c.json({ data: [], _upstream_error: true, message: 'ReliefWeb API unavailable' })
   }
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   RELIEFWEB — UN OCHA disaster data (proxy to avoid CORS)
-═══════════════════════════════════════════════════════════════ */
-app.get('/api/reliefweb/disasters', async (c) => {
-  const APPNAME = 'SMansabdar-SentinelXresearchdashboard-7f9c2a'
-
-  try {
-    const res = await fetch(`https://api.reliefweb.int/v1/disasters?appname=${APPNAME}&limit=50`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'User-Agent': 'SENTINEL-OS/5.0' },
-      body: JSON.stringify({
-        fields: { include: ['name', 'country', 'status', 'primary_type', 'glide', 'date'] },
-        sort: ['date:desc'],
-        limit: 50
-      }),
-      signal: AbortSignal.timeout(12000)
-    })
-    if (res.ok) {
-      const data = await res.json()
-      return c.json(data)
-    }
-  } catch {}
-
-  try {
-    const res = await fetch(
-      `https://api.reliefweb.int/v1/disasters?appname=${APPNAME}&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date`,
-      { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'SENTINEL-OS/5.0' } }
-    )
-    if (res.ok) {
-      const data = await res.json()
-      return c.json(data)
-    }
-  } catch {}
-
-  return c.json({
-    data: [],
-    error: 'ReliefWeb API request failed',
-    note: 'GDACS serves as the primary disaster feed.'
-  })
-})
-
-/* ═══════════════════════════════════════════════════════════════
-   ACLED — Armed Conflict Location & Event Data (free tier)
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACLED — Armed Conflict (free registration required)
+// Register at: https://developer.acleddata.com/
+// ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/acled/events', async (c) => {
   const key = c.env.ACLED_KEY
-  if (!key) {
-    return c.json({
-      data: [],
-      error: 'ACLED_KEY not set',
-      registration_url: 'https://developer.acleddata.com/',
-      note: 'ACLED requires free registration at developer.acleddata.com. Once registered, you receive an API key and must use your registered email as the email parameter.'
-    })
-  }
-
+  const email = c.env.ACLED_EMAIL
+  if (!key || !email) return c.json(upstreamError('acled', 0, 'ACLED_KEY and ACLED_EMAIL not set. Free registration at https://developer.acleddata.com/'))
   try {
-    const res = await fetch(
-      `https://api.acleddata.com/acled/read?key=${key}&email=sentinel@osint.platform&limit=100&sort=event_date:desc`,
-      { signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'SENTINEL-OS/5.0' } }
-    )
-    if (!res.ok) return c.json({ data: [], error: `HTTP ${res.status}` })
-    const data = await res.json() as any
-    return c.json({ data: data.data || [], count: data.count || 0 })
-  } catch (error) {
-    return c.json({ data: [], error: String(error) })
-  }
+    const data = await safeJson(`https://api.acleddata.com/acled/read?key=${key}&email=${encodeURIComponent(email)}&limit=100&sort=event_date:desc`, {}, 12000)
+    return c.json({ data: data.data || [], count: data.count || 0, source: 'acled' })
+  } catch (error) { return c.json(upstreamError('acled', 0, String(error))) }
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   GDELT CONFLICT INTEL — Article-based geocoding endpoint
-═══════════════════════════════════════════════════════════════ */
-async function fetchGDELTWithRetry(url: string, retries = 0): Promise<any> {
-  for (let i = 0; i <= retries; i++) {
+// ═══════════════════════════════════════════════════════════════════════════════
+// GDELT CONFLICT INTEL — Article-based geocoding
+// Free, no key: https://api.gdeltproject.org/
+// ═══════════════════════════════════════════════════════════════════════════════
+async function fetchGDELT(url: string): Promise<any> {
+  for (let i = 0; i < 2; i++) {
     try {
       if (i > 0) await new Promise(r => setTimeout(r, 2000))
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/5.0)' },
-        signal: AbortSignal.timeout(8000)
-      })
-      if (res.status === 429) {
-        if (i < retries) continue
-        return null
-      }
+      const res = await safeFetch(url, {}, 8000)
+      if (res.status === 429) continue
       if (!res.ok) return null
       const text = await res.text()
       try { return JSON.parse(text) } catch { return null }
-    } catch { if (i === retries) return null }
+    } catch { /* retry */ }
   }
   return null
 }
 
 app.post('/api/intel/gdelt', async (c) => {
-  const { category } = await c.req.json<{ category?: string }>()
-  const targetKey = category === 'maritime' ? 'gdelt_maritime'
-    : category === 'nuclear' ? 'gdelt_nuclear'
-    : category === 'cyber' ? 'gdelt_cyber'
-    : 'gdelt_conflict'
-
-  const config = TARGETS[targetKey]
-  if (!config || typeof config.url !== 'string') {
-    return c.json({ events: [], error: 'Invalid category' })
-  }
+  const { category } = await c.req.json<{ category?: string }>().catch(() => ({ category: 'conflict' }))
+  const key = category === 'maritime' ? 'gdelt_maritime' : category === 'nuclear' ? 'gdelt_nuclear' : category === 'cyber' ? 'gdelt_cyber' : 'gdelt_conflict'
+  const config = TARGETS[key]
+  if (!config || typeof config.url !== 'string') return c.json(upstreamError('gdelt', 400, 'Invalid category'))
 
   try {
-    const data = await fetchGDELTWithRetry(config.url)
-    if (!data) return c.json({ events: [], error: 'GDELT unavailable or rate-limited' })
-
+    const data = await fetchGDELT(config.url)
+    if (!data) return c.json({ events: [], _upstream_error: true, message: 'GDELT unavailable or rate-limited' })
     const articles = data.articles || []
-    const events = articles.map((art: any, i: number) => {
-      const geo = geocodeFromText(art.title, art.domain)
+    const events: CanonicalEvent[] = articles.map((art: any, i: number) => {
+      const geo = geocodeFromText(art.title || '')
       if (!geo) return null
-      return {
-        id: `gdelt_${category || 'conflict'}_${i}`,
-        type: category === 'cyber' ? 'cyber' : category === 'nuclear' ? 'nuclear' : 'conflict',
+      return evt({
+        id: `gdelt_${category}_${i}`, entity_type: category === 'cyber' ? 'cyber_intel' : category === 'nuclear' ? 'nuclear_intel' : 'conflict_intel',
+        source: 'GDELT 2.0', source_url: art.url || '', title: art.title || '',
+        description: `${art.domain || ''} — ${art.sourcecountry || ''}`,
         lat: geo.lat, lon: geo.lon, region: geo.region,
-        title: art.title, url: art.url, domain: art.domain,
-        timestamp: art.seendate, country: art.sourcecountry,
-        language: art.language, matchedLocation: geo.matchedKey,
-      }
-    }).filter(Boolean)
-
-    return c.json({ events, total: articles.length, geocoded: events.length })
-  } catch (error) {
-    return c.json({ events: [], error: String(error) })
-  }
+        timestamp: art.seendate || new Date().toISOString(), confidence: geo.confidence,
+        severity: 'medium', tags: [category || 'conflict', geo.matched],
+        provenance: 'geocoded-inferred',
+        metadata: { domain: art.domain, language: art.language, matched_location: geo.matched }
+      })
+    }).filter(Boolean) as CanonicalEvent[]
+    return c.json({ events, total: articles.length, geocoded: events.length, source: 'gdelt' })
+  } catch (error) { return c.json(upstreamError('gdelt', 0, String(error))) }
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   NEWS INTEL — NewsAPI-based geocoding (supplemental to GDELT)
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// NEWS INTEL — supplemental to GDELT
+// Requires: NEWS_API_KEY (free at https://newsapi.org/register)
+// ═══════════════════════════════════════════════════════════════════════════════
 app.post('/api/intel/news', async (c) => {
-  const { category } = await c.req.json<{ category?: string }>()
+  const { category } = await c.req.json<{ category?: string }>().catch(() => ({ category: 'conflict' }))
   const key = c.env.NEWS_API_KEY
-  if (!key) return c.json({ events: [], error: 'NEWS_API_KEY not set' })
-
-  const query = category === 'cyber'
-    ? 'cyberattack+ransomware+hacking+data+breach'
-    : category === 'nuclear'
-    ? 'nuclear+missile+warhead+uranium'
-    : category === 'gpsjam'
-    ? 'GPS+jamming+spoofing+navigation+interference'
-    : 'military+attack+conflict+bombing+airstrike'
-
+  if (!key) return c.json(upstreamError('newsapi', 0, 'NEWS_API_KEY not set. Free at https://newsapi.org/register'))
+  const query = category === 'cyber' ? 'cyberattack+ransomware+hacking+breach' : category === 'nuclear' ? 'nuclear+missile+warhead+uranium' : 'military+attack+conflict+airstrike'
   try {
     const fromDate = new Date(Date.now() - 3 * 86400000).toISOString().split('T')[0]
-    const res = await fetch(
-      `https://newsapi.org/v2/everything?q=${query}&sortBy=publishedAt&pageSize=40&language=en&from=${fromDate}&apiKey=${key}`,
-      { signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/5.0)' } }
-    )
-    if (!res.ok) return c.json({ events: [], error: `HTTP ${res.status}` })
-    const data = await res.json() as any
+    const data = await safeJson(`https://newsapi.org/v2/everything?q=${query}&sortBy=publishedAt&pageSize=40&language=en&from=${fromDate}&apiKey=${key}`, {}, 12000)
     const articles = data.articles || []
-
-    const events = articles.map((art: any, i: number) => {
-      const geo = geocodeFromText(art.title || '', art.source?.name || '')
+    const events: CanonicalEvent[] = articles.map((art: any, i: number) => {
+      const geo = geocodeFromText(art.title || '')
       if (!geo) return null
-      return {
-        id: `news_${category || 'conflict'}_${i}`,
-        type: category === 'cyber' ? 'cyber' : category === 'nuclear' ? 'nuclear' : category === 'gpsjam' ? 'gpsjam' : 'conflict',
+      return evt({
+        id: `news_${category}_${i}`, entity_type: category === 'cyber' ? 'cyber_intel' : 'conflict_intel',
+        source: 'NewsAPI', source_url: art.url || '', title: art.title || '',
         lat: geo.lat, lon: geo.lon, region: geo.region,
-        title: art.title, url: art.url, domain: art.source?.name || '',
-        timestamp: art.publishedAt, country: '', language: 'en',
-        matchedLocation: geo.matchedKey,
-        imageUrl: art.urlToImage || '',
-      }
-    }).filter(Boolean)
-
+        timestamp: art.publishedAt || '', confidence: geo.confidence,
+        severity: 'medium', tags: [category || 'conflict', geo.matched],
+        provenance: 'geocoded-inferred',
+        metadata: { source_name: art.source?.name, image_url: art.urlToImage || '', matched_location: geo.matched }
+      })
+    }).filter(Boolean) as CanonicalEvent[]
     return c.json({ events, total: articles.length, geocoded: events.length, source: 'newsapi' })
-  } catch (error) {
-    return c.json({ events: [], error: String(error) })
-  }
+  } catch (error) { return c.json(upstreamError('newsapi', 0, String(error))) }
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   CYBERSECURITY — AlienVault OTX Public Pulse Feed
-   Free API: https://otx.alienvault.com/api
-   Get API key at: https://otx.alienvault.com/ (free registration)
-═══════════════════════════════════════════════════════════════ */
-app.get('/api/cyber/otx', async (c) => {
-  // OTX public pulse feed — works without key for public data
-  const otxKey = c.env.OTX_KEY || ''
-  
+// ═══════════════════════════════════════════════════════════════════════════════
+// CYBER — CISA Known Exploited Vulnerabilities (KEV)
+// Free, no key: https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/cyber/cisa-kev', async (c) => {
   try {
-    const headers: Record<string, string> = {
-      'User-Agent': 'SENTINEL-OS/5.0',
-      'Accept': 'application/json',
-    }
-    if (otxKey) headers['X-OTX-API-KEY'] = otxKey
-
-    // Try subscribed pulses first (requires API key)
-    if (otxKey) {
-      try {
-        const res = await fetch(
-          'https://otx.alienvault.com/api/v1/pulses/subscribed?limit=50&modified_since=' + 
-          new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0],
-          { headers, signal: AbortSignal.timeout(12000) }
-        )
-        if (res.ok) {
-          const data = await res.json() as any
-          return c.json({ results: data.results || [], count: data.count || 0, source: 'otx-subscribed' })
-        }
-      } catch {}
-    }
-
-    // Fallback 1: Activity feed (works without key)
+    let data: any
     try {
-      const actRes = await fetch(
-        'https://otx.alienvault.com/api/v1/pulses/activity?limit=30',
-        { headers: { 'User-Agent': 'SENTINEL-OS/5.0', 'Accept': 'application/json' }, signal: AbortSignal.timeout(10000) }
-      )
-      if (actRes.ok) {
-        const actData = await actRes.json() as any
-        if (actData.results && actData.results.length > 0) {
-          return c.json({ results: actData.results || [], count: actData.count || 0, source: 'otx-activity' })
-        }
-      }
-    } catch {}
-
-    // Fallback 2: Search for recent threat pulses
-    try {
-      const searchRes = await fetch(
-        'https://otx.alienvault.com/api/v1/search/pulses?q=malware+ransomware+apt&sort=modified&limit=25',
-        { headers: { 'User-Agent': 'SENTINEL-OS/5.0', 'Accept': 'application/json' }, signal: AbortSignal.timeout(10000) }
-      )
-      if (searchRes.ok) {
-        const searchData = await searchRes.json() as any
-        return c.json({ results: searchData.results || [], count: searchData.count || 0, source: 'otx-search' })
-      }
-    } catch {}
-
-    return c.json({
-      results: [],
-      error: 'OTX API unavailable',
-      registration_url: 'https://otx.alienvault.com/',
-      note: 'Register free at otx.alienvault.com to get an OTX API key for full access.'
-    })
-  } catch (error) {
-    return c.json({ results: [], error: String(error) })
-  }
+      data = await safeJson('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', {}, 15000)
+    } catch {
+      // Mirror fallback
+      data = await safeJson('https://raw.githubusercontent.com/cisagov/known-exploited-vulnerabilities/main/data/known_exploited_vulnerabilities.json', {}, 12000)
+    }
+    const vulns = (data.vulnerabilities || []).slice(0, 100)
+    const events: CanonicalEvent[] = vulns.map((v: any, i: number) => evt({
+      id: `kev_${v.cveID || i}`, entity_type: 'cyber_vulnerability',
+      source: 'CISA KEV', source_url: `https://nvd.nist.gov/vuln/detail/${v.cveID}`,
+      title: `${v.cveID}: ${v.vulnerabilityName || 'Unknown'}`,
+      description: v.shortDescription || '',
+      timestamp: v.dateAdded || '', severity: 'high', risk_score: 75,
+      confidence: 95, tags: ['cisa-kev', 'known-exploited', v.vendorProject || '', v.product || ''].filter(Boolean),
+      provenance: 'direct-api',
+      metadata: { cve_id: v.cveID, vendor: v.vendorProject, product: v.product, required_action: v.requiredAction, due_date: v.dueDate, known_ransomware: v.knownRansomwareCampaignUse }
+    }))
+    return c.json({ events, count: events.length, catalog_date: data.catalogVersion, source: 'cisa-kev' })
+  } catch (error) { return c.json(upstreamError('cisa-kev', 0, String(error))) }
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   CYBERSECURITY — URLhaus Malware URL Feed (abuse.ch)
-   Free, no API key required: https://urlhaus-api.abuse.ch/
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// CYBER — AlienVault OTX
+// Optional key at: https://otx.alienvault.com/ (free registration)
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/cyber/otx', async (c) => {
+  const otxKey = c.env.OTX_KEY || ''
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (otxKey) headers['X-OTX-API-KEY'] = otxKey
+
+  // Try subscribed → activity → search (triple fallback)
+  const urls = otxKey
+    ? [`https://otx.alienvault.com/api/v1/pulses/subscribed?limit=50&modified_since=${new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]}`,
+       'https://otx.alienvault.com/api/v1/pulses/activity?limit=30',
+       'https://otx.alienvault.com/api/v1/search/pulses?q=malware+ransomware+apt&sort=modified&limit=25']
+    : ['https://otx.alienvault.com/api/v1/pulses/activity?limit=30',
+       'https://otx.alienvault.com/api/v1/search/pulses?q=malware+ransomware+apt&sort=modified&limit=25']
+
+  for (const url of urls) {
+    try {
+      const data = await safeJson(url, { headers }, 10000)
+      if (data.results && data.results.length > 0) {
+        const events: CanonicalEvent[] = data.results.slice(0, 50).map((p: any, i: number) => evt({
+          id: `otx_${p.id || i}`, entity_type: 'cyber_threat_intel',
+          source: 'AlienVault OTX', source_url: `https://otx.alienvault.com/pulse/${p.id}`,
+          title: p.name || 'Unknown Pulse', description: (p.description || '').slice(0, 300),
+          timestamp: p.modified || p.created || '', confidence: 70, severity: p.adversary ? 'high' : 'medium',
+          tags: (p.tags || []).slice(0, 10), provenance: 'direct-api',
+          metadata: { adversary: p.adversary, malware_families: p.malware_families, targeted_countries: p.targeted_countries, indicator_count: p.indicator_type_counts, tlp: p.tlp, references: (p.references || []).slice(0, 5) }
+        }))
+        return c.json({ events, count: events.length, source: 'otx' })
+      }
+    } catch { /* try next fallback */ }
+  }
+  return c.json(upstreamError('otx', 0, 'OTX API unavailable. Register free at https://otx.alienvault.com/'))
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CYBER — URLhaus (abuse.ch) — free, no key
+// https://urlhaus-api.abuse.ch/
+// ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/cyber/urlhaus', async (c) => {
   try {
-    // Try the recent URLs endpoint first
-    const res = await fetch('https://urlhaus-api.abuse.ch/v1/urls/recent/limit/50/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'SENTINEL-OS/5.0' },
-      signal: AbortSignal.timeout(10000)
-    })
-
+    const res = await safeFetch('https://urlhaus-api.abuse.ch/v1/urls/recent/limit/50/', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }, 10000)
     if (res.ok) {
       const ct = res.headers.get('content-type') || ''
       if (ct.includes('json')) {
         const data = await res.json() as any
-        if (data.urls && data.urls.length > 0) {
-          return c.json({ urls: data.urls, query_status: data.query_status || 'ok' })
+        if (data.urls?.length > 0) {
+          const events: CanonicalEvent[] = data.urls.slice(0, 50).map((u: any, i: number) => evt({
+            id: `urlhaus_${u.id || i}`, entity_type: 'cyber_malware_url',
+            source: 'URLhaus (abuse.ch)', source_url: u.urlhaus_reference || 'https://urlhaus.abuse.ch/',
+            title: `Malware URL: ${(u.url || '').slice(0, 80)}`,
+            description: `Threat: ${u.threat || 'unknown'} | Status: ${u.url_status || 'unknown'}`,
+            timestamp: u.dateadded || '', confidence: 85, severity: u.url_status === 'online' ? 'high' : 'medium',
+            tags: [...(u.tags || []), u.threat || ''].filter(Boolean), provenance: 'direct-api',
+            metadata: { url: u.url, host: u.host, url_status: u.url_status, threat: u.threat, reporter: u.reporter }
+          }))
+          return c.json({ events, count: events.length, source: 'urlhaus' })
         }
       }
     }
-
-    // Fallback: Try CSV feed (more reliable)
-    const csvRes = await fetch('https://urlhaus.abuse.ch/downloads/csv_recent/', {
-      headers: { 'User-Agent': 'SENTINEL-OS/5.0' },
-      signal: AbortSignal.timeout(10000)
-    })
+    // CSV fallback
+    const csvRes = await safeFetch('https://urlhaus.abuse.ch/downloads/csv_recent/', {}, 10000)
     if (csvRes.ok) {
       const csv = await csvRes.text()
       const lines = csv.split('\n').filter(l => l && !l.startsWith('#')).slice(0, 50)
-      const urls = lines.map(l => {
-        const parts = l.split(',').map(p => p.replace(/^"|"$/g, ''))
-        return { id: parts[0], dateadded: parts[1], url: parts[2], url_status: parts[3], threat: parts[5], tags: parts[6]?.split('|') || [], host: parts[7], country: '' }
-      }).filter(u => u.url)
-      return c.json({ urls, query_status: 'csv_fallback' })
+      const events: CanonicalEvent[] = lines.map((l, i) => {
+        const p = l.split(',').map(s => s.replace(/^"|"$/g, ''))
+        return evt({ id: `urlhaus_csv_${i}`, entity_type: 'cyber_malware_url', source: 'URLhaus (abuse.ch)', source_url: 'https://urlhaus.abuse.ch/', title: `Malware URL: ${(p[2] || '').slice(0, 80)}`, description: `Threat: ${p[5] || 'unknown'}`, timestamp: p[1] || '', confidence: 80, severity: 'medium', tags: (p[6] || '').split('|').filter(Boolean), provenance: 'direct-api', metadata: { url: p[2], url_status: p[3], host: p[7] } })
+      })
+      return c.json({ events, count: events.length, source: 'urlhaus-csv' })
     }
-
-    return c.json({ urls: [], error: 'URLhaus API unavailable from this location', note: 'URLhaus feeds work from Cloudflare Edge. Visit https://urlhaus.abuse.ch/ for direct access.' })
-  } catch (error) {
-    return c.json({ urls: [], error: String(error) })
-  }
+    return c.json(upstreamError('urlhaus', 0, 'URLhaus API unavailable'))
+  } catch (error) { return c.json(upstreamError('urlhaus', 0, String(error))) }
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   CYBERSECURITY — ThreatFox IOC Feed (abuse.ch)
-   Free, no API key required: https://threatfox-api.abuse.ch/
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// CYBER — ThreatFox IOC (abuse.ch) — free, no key
+// https://threatfox-api.abuse.ch/
+// ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/cyber/threatfox', async (c) => {
   try {
-    const res = await fetch('https://threatfox-api.abuse.ch/api/v1/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'User-Agent': 'SENTINEL-OS/5.0' },
-      body: JSON.stringify({ query: 'get_iocs', days: 3 }),
-      signal: AbortSignal.timeout(10000)
-    })
-
+    const res = await safeFetch('https://threatfox-api.abuse.ch/api/v1/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'get_iocs', days: 3 }) }, 10000)
     if (res.ok) {
-      const ct = res.headers.get('content-type') || ''
-      if (ct.includes('json')) {
-        const data = await res.json() as any
-        return c.json({
-          data: Array.isArray(data.data) ? data.data.slice(0, 60) : [],
-          query_status: data.query_status || 'no_results',
-          source: 'threatfox'
-        })
-      }
+      const data = await res.json() as any
+      const iocs = Array.isArray(data.data) ? data.data.slice(0, 60) : []
+      const events: CanonicalEvent[] = iocs.map((ioc: any, i: number) => evt({
+        id: `threatfox_${ioc.id || i}`, entity_type: 'cyber_ioc',
+        source: 'ThreatFox (abuse.ch)', source_url: `https://threatfox.abuse.ch/ioc/${ioc.id}/`,
+        title: `IOC: ${ioc.ioc_value || 'Unknown'}`,
+        description: `${ioc.malware || ''} — ${ioc.threat_type || ''} (${ioc.ioc_type || ''})`,
+        timestamp: ioc.first_seen_utc || '', confidence: ioc.confidence_level || 70,
+        severity: (ioc.threat_type || '').includes('botnet') ? 'high' : 'medium',
+        tags: (ioc.tags || []).concat([ioc.malware || '', ioc.threat_type || '']).filter(Boolean),
+        provenance: 'direct-api',
+        metadata: { ioc_type: ioc.ioc_type, ioc_value: ioc.ioc_value, malware: ioc.malware, malware_alias: ioc.malware_alias, threat_type: ioc.threat_type, reporter: ioc.reporter, reference: ioc.reference }
+      }))
+      return c.json({ events, count: events.length, source: 'threatfox' })
     }
-
-    return c.json({ data: [], error: 'ThreatFox API unavailable from this location', note: 'ThreatFox feeds work from Cloudflare Edge. Visit https://threatfox.abuse.ch/ for direct access.' })
-  } catch (error) {
-    return c.json({ data: [], error: String(error) })
-  }
+    return c.json(upstreamError('threatfox', 0, 'ThreatFox API unavailable'))
+  } catch (error) { return c.json(upstreamError('threatfox', 0, String(error))) }
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   GPS JAMMING ANOMALIES — Known Interference Hotspots + Analysis
-   Sources: GPSJAM.org data model, known conflict zone jamming
-   GPSJam.org uses ADS-B data from aircraft — no public API
-   We provide curated known jamming zones + GDELT GPS news
-═══════════════════════════════════════════════════════════════ */
-
-// Known GPS jamming/spoofing hotspots (curated from GPSJam.org, Eurocontrol, FAA NOTAMs)
-const GPS_JAM_ZONES = [
-  // Active military jamming zones
-  { name: 'Ukraine — Eastern Front', lat: 48.5, lon: 37.0, radius: 300, severity: 'critical', type: 'military_jamming', source: 'GPSJam/ADS-B', description: 'Active GPS jamming from Russian EW systems (Krasukha-4, Pole-21)', affected: 'All GNSS', lastDetected: 'Continuous', confidence: 95 },
-  { name: 'Kaliningrad Oblast', lat: 54.7, lon: 20.5, radius: 200, severity: 'high', type: 'military_jamming', source: 'GPSJam/Eurocontrol', description: 'Russian military GNSS jamming affecting Baltic airspace', affected: 'GPS L1/L2', lastDetected: 'Continuous', confidence: 90 },
-  { name: 'Eastern Baltic Sea', lat: 57.5, lon: 22.0, radius: 250, severity: 'high', type: 'spoofing', source: 'GPSJam/EASA', description: 'GPS spoofing incidents affecting commercial aviation over Baltic states', affected: 'GPS + Galileo', lastDetected: 'Recent', confidence: 85 },
-  { name: 'Syria — Northwest', lat: 35.5, lon: 36.8, radius: 200, severity: 'high', type: 'military_jamming', source: 'GPSJam/Bellingcat', description: 'Russian Khmeimim air base EW operations', affected: 'GPS L1', lastDetected: 'Continuous', confidence: 88 },
-  { name: 'Eastern Mediterranean', lat: 34.5, lon: 33.5, radius: 350, severity: 'medium', type: 'spoofing', source: 'GPSJam/C4ADS', description: 'GPS spoofing affecting shipping and aviation near Cyprus, Lebanon', affected: 'GPS', lastDetected: 'Intermittent', confidence: 80 },
-  { name: 'Iran — Western Border', lat: 33.5, lon: 46.0, radius: 300, severity: 'high', type: 'military_jamming', source: 'GPSJam', description: 'Iranian military GPS jamming near Iraq border', affected: 'GPS + GLONASS', lastDetected: 'Recent', confidence: 75 },
-  { name: 'Israel — Northern Border', lat: 33.0, lon: 35.5, radius: 150, severity: 'high', type: 'spoofing', source: 'GPSJam/OPSGROUP', description: 'Massive GPS spoofing affecting Ben Gurion approaches and regional airspace', affected: 'GPS L1', lastDetected: 'Continuous', confidence: 92 },
-  { name: 'North Korea — DMZ', lat: 37.9, lon: 126.7, radius: 120, severity: 'medium', type: 'military_jamming', source: 'GPSJam/ROK MND', description: 'DPRK GPS jamming directed at South Korean targets', affected: 'GPS L1', lastDetected: 'Periodic', confidence: 82 },
-  // Maritime chokepoints
-  { name: 'Red Sea — Southern', lat: 14.0, lon: 42.8, radius: 200, severity: 'medium', type: 'spoofing', source: 'GPSJam/IMO', description: 'GPS spoofing incidents affecting shipping near Bab el-Mandeb', affected: 'GPS', lastDetected: 'Recent', confidence: 72 },
-  { name: 'Strait of Hormuz', lat: 26.5, lon: 56.3, radius: 120, severity: 'medium', type: 'military_jamming', source: 'GPSJam', description: 'Iranian GNSS interference affecting maritime traffic', affected: 'GPS', lastDetected: 'Intermittent', confidence: 68 },
-  { name: 'Black Sea — Western', lat: 44.0, lon: 33.0, radius: 250, severity: 'high', type: 'spoofing', source: 'GPSJam/C4ADS', description: 'GPS spoofing centered on Sevastopol naval base, affecting civilian shipping', affected: 'GPS + GLONASS', lastDetected: 'Continuous', confidence: 87 },
-  // Additional zones
-  { name: 'Finland — Eastern Border', lat: 62.0, lon: 29.5, radius: 150, severity: 'medium', type: 'military_jamming', source: 'GPSJam/Traficom', description: 'GNSS interference from Kola Peninsula military installations', affected: 'GPS + Galileo', lastDetected: 'Periodic', confidence: 78 },
-  { name: 'Turkey — Southeast', lat: 37.5, lon: 40.0, radius: 180, severity: 'medium', type: 'military_jamming', source: 'GPSJam', description: 'GPS jamming related to cross-border military operations', affected: 'GPS', lastDetected: 'Recent', confidence: 70 },
-  { name: 'South China Sea — Spratly', lat: 10.5, lon: 114.0, radius: 200, severity: 'medium', type: 'spoofing', source: 'C4ADS/SkyTruth', description: 'AIS and GPS spoofing affecting maritime vessels near Chinese installations', affected: 'GPS + BeiDou', lastDetected: 'Intermittent', confidence: 74 },
-  { name: 'Taiwan Strait', lat: 24.0, lon: 119.5, radius: 150, severity: 'low', type: 'military_jamming', source: 'GPSJam', description: 'Occasional PLA EW exercises affecting GNSS signals', affected: 'GPS', lastDetected: 'Periodic', confidence: 60 },
+// ═══════════════════════════════════════════════════════════════════════════════
+// GNSS ANOMALY LAYER — GPS jamming / spoofing reference data + news
+// Sources: Curated from GPSJam.org, Eurocontrol, EASA, C4ADS reports
+// No live API available — this is a reference model enriched with GDELT news
+// ═══════════════════════════════════════════════════════════════════════════════
+const GNSS_ZONES: CanonicalEvent[] = [
+  { id: 'gnss_ua_east', entity_type: 'gnss_jamming', source: 'GPSJam.org / ADS-B analysis', source_url: 'https://gpsjam.org/', title: 'Ukraine — Eastern Front', description: 'Active GPS jamming from Russian EW systems (Krasukha-4, Pole-21). Continuous.', lat: 48.5, lon: 37.0, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 90, severity: 'critical', risk_score: 85, region: 'Eastern Europe', tags: ['military-jamming', 'continuous', 'GPS', 'GLONASS'], correlations: ['gnss_black_sea'], metadata: { radius_km: 300, affected_systems: 'All GNSS', type: 'military_jamming' }, provenance: 'curated-reference' },
+  { id: 'gnss_kaliningrad', entity_type: 'gnss_jamming', source: 'GPSJam.org / Eurocontrol', source_url: 'https://gpsjam.org/', title: 'Kaliningrad Oblast', description: 'Russian military GNSS jamming affecting Baltic airspace.', lat: 54.7, lon: 20.5, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 85, severity: 'high', risk_score: 70, region: 'Europe', tags: ['military-jamming', 'continuous', 'GPS-L1/L2'], correlations: ['gnss_baltic'], metadata: { radius_km: 200, affected_systems: 'GPS L1/L2', type: 'military_jamming' }, provenance: 'curated-reference' },
+  { id: 'gnss_baltic', entity_type: 'gnss_spoofing', source: 'GPSJam.org / EASA', source_url: 'https://gpsjam.org/', title: 'Eastern Baltic Sea', description: 'GPS spoofing affecting commercial aviation over Baltic states.', lat: 57.5, lon: 22.0, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 80, severity: 'high', risk_score: 65, region: 'Europe', tags: ['spoofing', 'aviation-impact', 'GPS', 'Galileo'], correlations: ['gnss_kaliningrad'], metadata: { radius_km: 250, affected_systems: 'GPS + Galileo', type: 'spoofing' }, provenance: 'curated-reference' },
+  { id: 'gnss_syria', entity_type: 'gnss_jamming', source: 'GPSJam.org / Bellingcat', source_url: 'https://gpsjam.org/', title: 'Syria — Northwest', description: 'Russian Khmeimim air base EW operations.', lat: 35.5, lon: 36.8, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 82, severity: 'high', risk_score: 60, region: 'Middle East', tags: ['military-jamming', 'continuous', 'GPS-L1'], correlations: [], metadata: { radius_km: 200, affected_systems: 'GPS L1', type: 'military_jamming' }, provenance: 'curated-reference' },
+  { id: 'gnss_israel', entity_type: 'gnss_spoofing', source: 'GPSJam.org / OPSGROUP', source_url: 'https://gpsjam.org/', title: 'Israel — Northern Border', description: 'Massive GPS spoofing affecting Ben Gurion approaches.', lat: 33.0, lon: 35.5, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 88, severity: 'high', risk_score: 72, region: 'Middle East', tags: ['spoofing', 'continuous', 'aviation-impact'], correlations: [], metadata: { radius_km: 150, affected_systems: 'GPS L1', type: 'spoofing' }, provenance: 'curated-reference' },
+  { id: 'gnss_iran', entity_type: 'gnss_jamming', source: 'GPSJam.org', source_url: 'https://gpsjam.org/', title: 'Iran — Western Border', description: 'Iranian military GPS jamming near Iraq border.', lat: 33.5, lon: 46.0, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 70, severity: 'medium', risk_score: 55, region: 'Middle East', tags: ['military-jamming', 'GPS', 'GLONASS'], correlations: [], metadata: { radius_km: 300, affected_systems: 'GPS + GLONASS', type: 'military_jamming' }, provenance: 'curated-reference' },
+  { id: 'gnss_dprk', entity_type: 'gnss_jamming', source: 'GPSJam.org / ROK MND', source_url: 'https://gpsjam.org/', title: 'North Korea — DMZ', description: 'DPRK GPS jamming toward South Korean targets.', lat: 37.9, lon: 126.7, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 75, severity: 'medium', risk_score: 50, region: 'Indo-Pacific', tags: ['military-jamming', 'periodic'], correlations: [], metadata: { radius_km: 120, affected_systems: 'GPS L1', type: 'military_jamming' }, provenance: 'curated-reference' },
+  { id: 'gnss_black_sea', entity_type: 'gnss_spoofing', source: 'C4ADS', source_url: 'https://c4ads.org/', title: 'Black Sea — Western', description: 'GPS spoofing centered on Sevastopol naval base.', lat: 44.0, lon: 33.0, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 82, severity: 'high', risk_score: 65, region: 'Eastern Europe', tags: ['spoofing', 'continuous', 'maritime-impact'], correlations: ['gnss_ua_east'], metadata: { radius_km: 250, affected_systems: 'GPS + GLONASS', type: 'spoofing' }, provenance: 'curated-reference' },
+  { id: 'gnss_red_sea', entity_type: 'gnss_spoofing', source: 'GPSJam.org / IMO', source_url: 'https://gpsjam.org/', title: 'Red Sea — Southern', description: 'GPS spoofing incidents near Bab el-Mandeb.', lat: 14.0, lon: 42.8, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 65, severity: 'medium', risk_score: 45, region: 'Middle East', tags: ['spoofing', 'maritime-impact'], correlations: [], metadata: { radius_km: 200, affected_systems: 'GPS', type: 'spoofing' }, provenance: 'curated-reference' },
+  { id: 'gnss_hormuz', entity_type: 'gnss_jamming', source: 'GPSJam.org', source_url: 'https://gpsjam.org/', title: 'Strait of Hormuz', description: 'Iranian GNSS interference affecting maritime traffic.', lat: 26.5, lon: 56.3, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 60, severity: 'medium', risk_score: 40, region: 'Middle East', tags: ['military-jamming', 'maritime-impact', 'intermittent'], correlations: [], metadata: { radius_km: 120, affected_systems: 'GPS', type: 'military_jamming' }, provenance: 'curated-reference' },
+  { id: 'gnss_scs', entity_type: 'gnss_spoofing', source: 'C4ADS / SkyTruth', source_url: 'https://c4ads.org/', title: 'South China Sea — Spratly', description: 'AIS and GPS spoofing near Chinese installations.', lat: 10.5, lon: 114.0, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 68, severity: 'medium', risk_score: 45, region: 'Indo-Pacific', tags: ['spoofing', 'maritime-impact', 'intermittent'], correlations: [], metadata: { radius_km: 200, affected_systems: 'GPS + BeiDou', type: 'spoofing' }, provenance: 'curated-reference' },
+  { id: 'gnss_emed', entity_type: 'gnss_spoofing', source: 'C4ADS', source_url: 'https://c4ads.org/', title: 'Eastern Mediterranean', description: 'GPS spoofing affecting shipping near Cyprus/Lebanon.', lat: 34.5, lon: 33.5, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 72, severity: 'medium', risk_score: 50, region: 'Europe', tags: ['spoofing', 'maritime-impact'], correlations: [], metadata: { radius_km: 350, affected_systems: 'GPS', type: 'spoofing' }, provenance: 'curated-reference' },
 ]
 
-app.get('/api/gps/jamming', async (c) => {
-  // Also try to get GPS-related news from GDELT for enrichment
-  let gpsNews: any[] = []
+app.get('/api/gnss/anomalies', async (c) => {
+  // Enrich with GDELT GNSS news
+  let newsEvents: CanonicalEvent[] = []
   try {
-    const newsData = await fetchGDELTWithRetry(
-      'https://api.gdeltproject.org/api/v2/doc/doc?query=GPS+jamming+spoofing+GNSS+interference+navigation&mode=artlist&maxrecords=15&format=json&timespan=72h&sourcelang=english'
-    )
-    if (newsData?.articles) {
-      gpsNews = newsData.articles.map((art: any, i: number) => {
-        const geo = geocodeFromText(art.title, art.domain)
-        return geo ? {
-          title: art.title, url: art.url, domain: art.domain,
-          lat: geo.lat, lon: geo.lon, region: geo.region,
-          timestamp: art.seendate
-        } : null
-      }).filter(Boolean).slice(0, 10)
+    const data = await fetchGDELT('https://api.gdeltproject.org/api/v2/doc/doc?query=GPS+jamming+spoofing+GNSS+interference+navigation&mode=artlist&maxrecords=15&format=json&timespan=72h&sourcelang=english')
+    if (data?.articles) {
+      newsEvents = data.articles.slice(0, 10).map((art: any, i: number) => {
+        const geo = geocodeFromText(art.title || '')
+        if (!geo) return null
+        return evt({
+          id: `gnss_news_${i}`, entity_type: 'gnss_news', source: 'GDELT', source_url: art.url || '',
+          title: art.title || '', lat: geo.lat, lon: geo.lon, region: geo.region,
+          timestamp: art.seendate || '', confidence: geo.confidence, severity: 'info',
+          tags: ['gnss', 'news', geo.matched], provenance: 'geocoded-inferred',
+          metadata: { domain: art.domain, matched_location: geo.matched }
+        })
+      }).filter(Boolean) as CanonicalEvent[]
     }
-  } catch {}
+  } catch { /* GDELT enrichment is optional */ }
 
   return c.json({
-    zones: GPS_JAM_ZONES,
-    count: GPS_JAM_ZONES.length,
-    gpsNews,
-    lastUpdated: new Date().toISOString(),
-    sources: [
-      { name: 'GPSJam.org', url: 'https://gpsjam.org/', description: 'Daily maps of GPS interference using ADS-B data', free: true, keyRequired: false },
-      { name: 'Eurocontrol', url: 'https://www.eurocontrol.int/', description: 'European aviation GNSS interference reports', free: true, keyRequired: false },
-      { name: 'OPSGROUP', url: 'https://ops.group/', description: 'Pilot-reported GPS interference tracking', free: false, keyRequired: true },
-      { name: 'C4ADS', url: 'https://c4ads.org/', description: 'GPS spoofing research and analysis', free: true, keyRequired: false },
-      { name: 'Flightradar24', url: 'https://www.flightradar24.com/data/gps-jamming', description: 'GPS jamming and interference map', free: true, keyRequired: false },
+    events: [...GNSS_ZONES, ...newsEvents],
+    zones: GNSS_ZONES.length,
+    news: newsEvents.length,
+    source: 'gnss-reference-model',
+    sources_info: [
+      { name: 'GPSJam.org', url: 'https://gpsjam.org/', free: true, key_required: false, description: 'Daily ADS-B-based GPS interference maps' },
+      { name: 'Eurocontrol', url: 'https://www.eurocontrol.int/', free: true, key_required: false, description: 'European GNSS interference reports' },
+      { name: 'C4ADS', url: 'https://c4ads.org/', free: true, key_required: false, description: 'GPS spoofing research' },
+      { name: 'EASA', url: 'https://www.easa.europa.eu/', free: true, key_required: false, description: 'Aviation safety bulletins' },
     ],
-    note: 'GPS jamming data is aggregated from multiple OSINT sources. GPSJam.org provides daily interference maps at https://gpsjam.org/. For real-time ADS-B NIC/NAC analysis, integrate ADS-B Exchange data.'
+    note: 'GNSS anomaly data is a curated reference model. No free real-time GNSS API exists. GPSJam.org provides daily maps at https://gpsjam.org/'
   })
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   SOCIAL MEDIA CONFLICT — Reddit OSINT Posts
-   Subreddits: r/CombatFootage, r/UkraineWarVideoReport, r/CredibleDefense
-   Uses Reddit JSON API (no auth required for public subreddits)
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOCIAL INTEL — Reddit public JSON
+// No key required for public subreddits. Rate limits apply.
+// ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/social/reddit', async (c) => {
-  const subreddits = [
-    { name: 'CombatFootage', type: 'video', description: 'Combat and conflict footage' },
-    { name: 'UkraineWarVideoReport', type: 'video', description: 'Ukraine conflict videos' },
-    { name: 'CredibleDefense', type: 'analysis', description: 'Military analysis & discussion' },
-    { name: 'UkrainianConflict', type: 'news', description: 'Ukraine conflict news' },
-    { name: 'osint', type: 'intel', description: 'Open Source Intelligence' },
+  const subs = [
+    { name: 'CombatFootage', tag: 'conflict-video' },
+    { name: 'UkraineWarVideoReport', tag: 'ukraine-video' },
+    { name: 'CredibleDefense', tag: 'military-analysis' },
+    { name: 'UkrainianConflict', tag: 'ukraine-news' },
+    { name: 'osint', tag: 'osint' },
   ]
 
-  const allPosts: any[] = []
+  const allEvents: CanonicalEvent[] = []
+  const results = await Promise.allSettled(
+    subs.map(sub =>
+      safeFetch(`https://www.reddit.com/r/${sub.name}/hot.json?limit=15&raw_json=1`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/6.0; +https://github.com/MSA-83/SENTINEL-X)' }
+      }, 10000).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      }).then((data: any) => {
+        return (data?.data?.children || []).map((child: any) => {
+          const p = child.data
+          if (!p) return null
+          // Media extraction
+          let media_url = ''
+          let media_type = 'text'
+          if (p.is_video && p.media?.reddit_video?.fallback_url) { media_url = p.media.reddit_video.fallback_url; media_type = 'video' }
+          else if (p.url && /\.(mp4|webm|mov)/i.test(p.url)) { media_url = p.url; media_type = 'video' }
+          else if (p.url && /v\.redd\.it|streamable|youtube|youtu\.be/i.test(p.url)) { media_url = p.url; media_type = 'video_link' }
+          else if (p.url && /\.(jpg|jpeg|png|gif|webp)/i.test(p.url)) { media_url = p.url; media_type = 'image' }
 
-  try {
-    const results = await Promise.allSettled(
-      subreddits.map(sub =>
-        fetch(`https://www.reddit.com/r/${sub.name}/hot.json?limit=15&t=week&raw_json=1`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/5.0; +https://github.com/sentinel-os)' },
-          signal: AbortSignal.timeout(10000)
-        }).then(r => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`)
-          return r.json()
-        }).then((data: any) => {
-          const posts = (data?.data?.children || []).map((child: any) => {
-            const p = child.data
-            if (!p) return null
-
-            // Extract video/media URLs
-            let mediaUrl = ''
-            let mediaType = 'text'
-            if (p.is_video && p.media?.reddit_video?.fallback_url) {
-              mediaUrl = p.media.reddit_video.fallback_url
-              mediaType = 'video'
-            } else if (p.url && /\.(mp4|webm|mov)/i.test(p.url)) {
-              mediaUrl = p.url
-              mediaType = 'video'
-            } else if (p.url && /v\.redd\.it|streamable|youtube|youtu\.be|twitter\.com|x\.com/i.test(p.url)) {
-              mediaUrl = p.url
-              mediaType = 'video_link'
-            } else if (p.url && /\.(jpg|jpeg|png|gif|webp)/i.test(p.url)) {
-              mediaUrl = p.url
-              mediaType = 'image'
-            } else if (p.thumbnail && p.thumbnail.startsWith('http')) {
-              mediaUrl = p.thumbnail
-              mediaType = 'thumbnail'
+          const geo = geocodeFromText(p.title || '')
+          return evt({
+            id: `reddit_${p.id}`, entity_type: 'social_post',
+            source: `Reddit r/${sub.name}`, source_url: `https://reddit.com${p.permalink}`,
+            title: (p.title || '').slice(0, 200),
+            description: (p.selftext || '').slice(0, 200),
+            lat: geo?.lat ?? null, lon: geo?.lon ?? null, region: geo?.region || '',
+            timestamp: p.created_utc ? new Date(p.created_utc * 1000).toISOString() : '',
+            confidence: geo ? geo.confidence : 0,
+            severity: 'info', tags: [sub.tag, p.link_flair_text || ''].filter(Boolean),
+            provenance: geo ? 'geocoded-inferred' : 'no-location',
+            metadata: {
+              subreddit: sub.name, author: p.author || '', score: p.score || 0,
+              num_comments: p.num_comments || 0, media_url, media_type,
+              thumbnail: p.thumbnail?.startsWith('http') ? p.thumbnail : '',
+              nsfw: p.over_18 || false, flair: p.link_flair_text || '',
+              external_url: p.url || '', matched_location: geo?.matched || null,
+              geolocation_method: geo ? 'text-inference' : 'none',
             }
-
-            // Geocode from title
-            const geo = geocodeFromText(p.title || '', sub.name)
-
-            return {
-              id: p.id,
-              subreddit: sub.name,
-              subType: sub.type,
-              title: p.title || '',
-              author: p.author || 'unknown',
-              score: p.score || 0,
-              numComments: p.num_comments || 0,
-              permalink: `https://reddit.com${p.permalink}`,
-              url: p.url || '',
-              mediaUrl,
-              mediaType,
-              thumbnail: p.thumbnail && p.thumbnail.startsWith('http') ? p.thumbnail : '',
-              created: p.created_utc ? new Date(p.created_utc * 1000).toISOString() : '',
-              flair: p.link_flair_text || '',
-              selftext: (p.selftext || '').slice(0, 200),
-              geo: geo ? { lat: geo.lat, lon: geo.lon, region: geo.region, matchedKey: geo.matchedKey } : null,
-              nsfw: p.over_18 || false,
-            }
-          }).filter(Boolean)
-
-          return posts
-        }).catch(() => [])
-      )
+          })
+        }).filter(Boolean) as CanonicalEvent[]
+      }).catch(() => [] as CanonicalEvent[])
     )
+  )
 
-    results.forEach(r => {
-      if (r.status === 'fulfilled' && Array.isArray(r.value)) {
-        allPosts.push(...r.value)
-      }
-    })
+  results.forEach(r => { if (r.status === 'fulfilled') allEvents.push(...r.value) })
+  allEvents.sort((a, b) => ((b.metadata.score as number) || 0) - ((a.metadata.score as number) || 0))
+  const geolocated = allEvents.filter(e => e.lat !== null)
 
-    // Sort by score descending, take top posts
-    allPosts.sort((a, b) => b.score - a.score)
-    const geolocated = allPosts.filter(p => p.geo !== null)
-    const withMedia = allPosts.filter(p => p.mediaType === 'video' || p.mediaType === 'video_link')
-
-    return c.json({
-      posts: allPosts.slice(0, 60),
-      total: allPosts.length,
-      geolocated: geolocated.length,
-      withVideo: withMedia.length,
-      subreddits: subreddits.map(s => s.name),
-      source: 'reddit-public-json'
-    })
-  } catch (error) {
-    return c.json({ posts: [], error: String(error) })
-  }
+  return c.json({
+    events: allEvents.slice(0, 60),
+    total: allEvents.length,
+    geolocated: geolocated.length,
+    source: 'reddit-public',
+    note: 'Reddit public JSON API. No authentication required. Locations are inferred from post titles and marked as low-confidence.'
+  })
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   FUSION CORRELATION ENGINE
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUSION — Threat zones
+// ═══════════════════════════════════════════════════════════════════════════════
 const FUSION_ZONES = [
-  { name: 'Ukraine/Russia Front', lat: 48.5, lon: 37.0, radius: 400, baseThreat: 55, type: 'conflict' },
-  { name: 'Gaza Strip', lat: 31.4, lon: 34.5, radius: 120, baseThreat: 70, type: 'conflict' },
-  { name: 'Iran Theater', lat: 32.4, lon: 53.7, radius: 500, baseThreat: 65, type: 'flashpoint' },
-  { name: 'Red Sea/Houthi Zone', lat: 14.5, lon: 43.5, radius: 350, baseThreat: 60, type: 'chokepoint' },
-  { name: 'Strait of Hormuz', lat: 26.5, lon: 56.3, radius: 180, baseThreat: 50, type: 'chokepoint' },
-  { name: 'Taiwan Strait', lat: 24.5, lon: 120.0, radius: 250, baseThreat: 55, type: 'flashpoint' },
-  { name: 'South China Sea', lat: 13.5, lon: 115.0, radius: 500, baseThreat: 45, type: 'flashpoint' },
-  { name: 'Korean Peninsula', lat: 38.0, lon: 127.5, radius: 200, baseThreat: 50, type: 'flashpoint' },
-  { name: 'Sudan Civil War', lat: 15.5, lon: 32.5, radius: 350, baseThreat: 50, type: 'conflict' },
-  { name: 'Sahel Insurgency', lat: 14.0, lon: 2.0, radius: 600, baseThreat: 40, type: 'conflict' },
-  { name: 'Kashmir LOC', lat: 34.0, lon: 74.5, radius: 200, baseThreat: 45, type: 'flashpoint' },
-  { name: 'Black Sea NATO Watch', lat: 43.5, lon: 34.5, radius: 400, baseThreat: 45, type: 'flashpoint' },
+  { name: 'Ukraine/Russia Front', lat: 48.5, lon: 37.0, radius: 400, base_threat: 55, type: 'conflict' },
+  { name: 'Gaza Strip', lat: 31.4, lon: 34.5, radius: 120, base_threat: 70, type: 'conflict' },
+  { name: 'Iran Theater', lat: 32.4, lon: 53.7, radius: 500, base_threat: 65, type: 'flashpoint' },
+  { name: 'Red Sea/Houthi Zone', lat: 14.5, lon: 43.5, radius: 350, base_threat: 60, type: 'chokepoint' },
+  { name: 'Strait of Hormuz', lat: 26.5, lon: 56.3, radius: 180, base_threat: 50, type: 'chokepoint' },
+  { name: 'Taiwan Strait', lat: 24.5, lon: 120.0, radius: 250, base_threat: 55, type: 'flashpoint' },
+  { name: 'South China Sea', lat: 13.5, lon: 115.0, radius: 500, base_threat: 45, type: 'flashpoint' },
+  { name: 'Korean Peninsula', lat: 38.0, lon: 127.5, radius: 200, base_threat: 50, type: 'flashpoint' },
+  { name: 'Sudan Civil War', lat: 15.5, lon: 32.5, radius: 350, base_threat: 50, type: 'conflict' },
+  { name: 'Sahel Insurgency', lat: 14.0, lon: 2.0, radius: 600, base_threat: 40, type: 'conflict' },
+  { name: 'Kashmir LOC', lat: 34.0, lon: 74.5, radius: 200, base_threat: 45, type: 'flashpoint' },
+  { name: 'Black Sea NATO Watch', lat: 43.5, lon: 34.5, radius: 400, base_threat: 45, type: 'flashpoint' },
 ]
 
 app.get('/api/fusion/zones', (c) => c.json({ zones: FUSION_ZONES }))
 
-/* ═══════════════════════════════════════════════════════════════
-   HEALTH + STATUS
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUSION — Viewport-aware zone query
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/fusion/viewport', (c) => {
+  const latMin = parseFloat(c.req.query('latMin') || '-90')
+  const latMax = parseFloat(c.req.query('latMax') || '90')
+  const lonMin = parseFloat(c.req.query('lonMin') || '-180')
+  const lonMax = parseFloat(c.req.query('lonMax') || '180')
+  const visible = FUSION_ZONES.filter(z =>
+    z.lat >= latMin && z.lat <= latMax && z.lon >= lonMin && z.lon <= lonMax
+  )
+  return c.json({ zones: visible, total: FUSION_ZONES.length, visible: visible.length })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HEALTH + STATUS
+// ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/health', (c) => c.json({
-  status: 'operational',
-  version: '5.1.0',
-  codename: 'SENTINEL OS',
+  status: 'operational', version: VERSION, codename: 'SENTINEL OS',
   timestamp: new Date().toISOString(),
-  uptime: 'edge-runtime',
-  domains: ['aviation', 'maritime', 'orbital', 'seismic', 'wildfire', 'weather', 'conflict', 'disaster', 'cyber', 'nuclear', 'gpsjam', 'social', 'satellite-imagery'],
-  satellite_imagery: {
-    sources: ['NASA GIBS (MODIS Terra/Aqua, VIIRS SNPP)', 'EOX Sentinel-2 Cloudless'],
-    update_frequency: 'daily (GIBS) / annual (S2)',
-    api_key_required: false,
-  },
+  domains: ['aviation', 'maritime', 'orbital', 'seismic', 'wildfire', 'weather', 'conflict', 'disaster', 'cyber', 'nuclear', 'gnss', 'social', 'imagery'],
 }))
 
 app.get('/api/status', (c) => {
+  const keyNames: (keyof Bindings)[] = ['NASA_FIRMS_KEY', 'OWM_KEY', 'N2YO_KEY', 'GFW_TOKEN', 'AVWX_KEY', 'RAPIDAPI_KEY', 'SHODAN_KEY', 'NEWS_API_KEY', 'AISSTREAM_KEY', 'OTX_KEY', 'ACLED_KEY', 'ACLED_EMAIL']
   const keys: Record<string, boolean> = {}
-  const envKeys: (keyof Bindings)[] = ['NASA_FIRMS_KEY', 'OWM_KEY', 'N2YO_KEY', 'GFW_TOKEN', 'AVWX_KEY', 'RAPIDAPI_KEY', 'SHODAN_KEY', 'NEWS_API_KEY', 'AISSTREAM_KEY', 'OTX_KEY']
-  for (const k of envKeys) {
-    keys[k] = !!(c.env[k])
-  }
-  return c.json({
-    keys,
-    targets: Object.keys(TARGETS),
-    fusion_zones: FUSION_ZONES.length,
-    geocoding_entries: Object.keys(GEO_DB).length,
-    gps_jam_zones: GPS_JAM_ZONES.length,
-  })
+  for (const k of keyNames) keys[k] = !!(c.env[k])
+  return c.json({ keys, targets: Object.keys(TARGETS).length, fusion_zones: FUSION_ZONES.length, gnss_zones: GNSS_ZONES.length, geocoding_entries: Object.keys(GEO_DB).length })
 })
 
-/* ═══════════════════════════════════════════════════════════════
-   SERVE MAIN HTML PAGE
-═══════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// HTML SHELL — served at /
+// ═══════════════════════════════════════════════════════════════════════════════
 app.get('/', (c) => {
-  const html = `<!DOCTYPE html>
+  return c.html(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<title>SENTINEL OS v5.1 — Global Situational Awareness</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛰</text></svg>">
+<title>SENTINEL OS v${VERSION}</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F6F0;</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Orbitron:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"><\/script>
-<script src="https://unpkg.com/satellite.js@5.0.0/dist/satellite.min.js"><\/script>
-<script src="https://unpkg.com/globe.gl@2.35.1/dist/globe.gl.min.js"><\/script>
-<script src="https://unpkg.com/three@0.160.0/build/three.min.js"><\/script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div id="map" style="position:absolute;inset:0;z-index:1"></div>
-<div id="globe" style="position:absolute;inset:0;z-index:1;display:none"></div>
-<div id="hud-overlay"></div>
-<div id="app"></div>
-<script src="/static/sentinel.js"><\/script>
+<div id="map"></div>
+<div id="hud"></div>
+<div id="inspector"></div>
+<div id="loading">
+  <div class="load-inner">
+    <div class="load-spinner"></div>
+    <div class="load-text">SENTINEL OS v${VERSION}</div>
+    <div class="load-sub" id="load-status">Loading dependencies...</div>
+  </div>
+</div>
+<script>
+// Dependency loader — map only initializes after Leaflet is confirmed ready
+(function(){
+  var deps = [
+    {src:'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', check:function(){return window.L}},
+    {src:'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js', check:function(){return window.L&&L.MarkerClusterGroup}},
+    {src:'https://unpkg.com/satellite.js@5.0.0/dist/satellite.min.js', check:function(){return window.satellite}, optional:true},
+  ];
+  var loaded=0;
+  function setStatus(msg){var el=document.getElementById('load-status');if(el)el.textContent=msg;}
+  function loadNext(){
+    if(loaded>=deps.length){setStatus('Initializing...');loadApp();return}
+    var dep=deps[loaded];
+    setStatus('Loading '+(loaded+1)+'/'+deps.length+'...');
+    var s=document.createElement('script');
+    s.src=dep.src;
+    s.onload=function(){loaded++;loadNext()};
+    s.onerror=function(){
+      if(dep.optional){console.warn('Optional dep failed:',dep.src);loaded++;loadNext()}
+      else{setStatus('Failed to load critical dependency');console.error('Failed:',dep.src)}
+    };
+    document.head.appendChild(s);
+  }
+  function loadApp(){
+    var s=document.createElement('script');s.src='/static/sentinel.js';
+    s.onerror=function(){setStatus('Failed to load application')};
+    document.head.appendChild(s);
+  }
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',loadNext)}
+  else{loadNext()}
+})();
+<\/script>
 </body>
-</html>`
-  return c.html(html)
+</html>`)
 })
 
 export default app

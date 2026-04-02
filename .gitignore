@@ -1,6 +1,31 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+
+# Wrangler local state
 .wrangler/
+
+# Secrets — NEVER commit
 .dev.vars
+
+# Logs
 *.log
+npm-debug.log*
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Backups
+*.backup
+*.bak
+*.tar.gz
+
+# Uploaded files (dev artifacts)
+upload_files/
