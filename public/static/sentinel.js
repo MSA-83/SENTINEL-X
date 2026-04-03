@@ -913,80 +913,76 @@
 
     h += '</div></div>'  // close lp-body + (lp or drawer)
 
-    // ── INSPECTOR ──
+    // u2500u2500 INSPECTOR u2500u2500
     if (selected) {
       const e = selected, t = scoreThreat(e)
       const isInf = e.provenance === 'geocoded-inferred'
-      h += '<div class="rp"><div class="rp-header">'
-      h += `<span class="rp-title">${e.title.slice(0, 80)}</span>`
-      h += `<span class="rp-close" onclick="S._closeInspector()">X</span></div>`
-
-      // Meta badges
-      h += '<div class="rp-badges">'
-      h += `<span class="badge" style="background:${t.col}22;color:${t.col}">${t.level} ${t.score}</span>`
-      h += confChip(e.confidence, e.provenance) + freshChip(e.timestamp)
-      if (isInf) h += '<span class="badge inferred">INFERRED LOC</span>'
-      h += `<span class="badge prov">${e.provenance}</span>`
-      if (e.severity !== 'info') h += `<span class="badge sev-${e.severity}">${e.severity.toUpperCase()}</span>`
+      const expKey = e.id
+      const isExp = cardExpanded[expKey]
+      h += '<div class="rp" data-eid="' + e.id + '">'
+      h += '<div class="rp-header">'
+      h += '<span class="rp-title">' + e.title.slice(0,80) + '</span>'
+      h += '<span class="rp-close" onclick="S._closeInspector()">X</span>'
       h += '</div>'
-
-      // Source
-      h += `<div class="rp-field"><span class="rp-key">SOURCE</span><span class="rp-val">${e.source}</span></div>`
-      if (e.source_url) h += `<div class="rp-field"><span class="rp-key">URL</span><a href="${e.source_url}" target="_blank" class="rp-link">${e.source_url.slice(0, 60)}</a></div>`
-      h += `<div class="rp-field"><span class="rp-key">TIMESTAMP</span><span class="rp-val">${e.timestamp}</span></div>`
-      if (e.lat != null) h += `<div class="rp-field"><span class="rp-key">POSITION</span><span class="rp-val">${e.lat.toFixed(4)}, ${e.lon.toFixed(4)}${isInf ? ' (inferred)' : ''}</span></div>`
-      if (e.altitude != null) h += `<div class="rp-field"><span class="rp-key">ALTITUDE</span><span class="rp-val">${e.altitude.toLocaleString()} ft</span></div>`
-      if (e.velocity != null) h += `<div class="rp-field"><span class="rp-key">VELOCITY</span><span class="rp-val">${e.velocity} kts</span></div>`
-      if (e.region) h += `<div class="rp-field"><span class="rp-key">REGION</span><span class="rp-val">${e.region}</span></div>`
-      if (e.description) h += `<div class="rp-field"><span class="rp-key">DESC</span><span class="rp-val">${e.description.slice(0, 200)}</span></div>`
-      if (e.tags?.length > 0) h += `<div class="rp-field"><span class="rp-key">TAGS</span><span class="rp-val">${e.tags.join(', ')}</span></div>`
-
-      // Cyber-specific card
-      if (e.entity_type.startsWith('cyber_')) {
-        h += '<div class="rp-card cyber-card">'
-        h += '<div class="card-header">CYBER INTELLIGENCE</div>'
-        if (e.metadata?.cve_id) h += `<div class="rp-field"><span class="rp-key">CVE</span><span class="rp-val">${e.metadata.cve_id}</span></div>`
-        if (e.metadata?.vendor) h += `<div class="rp-field"><span class="rp-key">VENDOR</span><span class="rp-val">${e.metadata.vendor}</span></div>`
-        if (e.metadata?.product) h += `<div class="rp-field"><span class="rp-key">PRODUCT</span><span class="rp-val">${e.metadata.product}</span></div>`
-        if (e.metadata?.malware) h += `<div class="rp-field"><span class="rp-key">MALWARE</span><span class="rp-val">${e.metadata.malware}</span></div>`
-        if (e.metadata?.ioc_value) h += `<div class="rp-field"><span class="rp-key">IOC</span><span class="rp-val mono">${e.metadata.ioc_value}</span></div>`
-        if (e.metadata?.known_ransomware) h += `<div class="rp-field"><span class="rp-key">RANSOMWARE</span><span class="rp-val">${e.metadata.known_ransomware}</span></div>`
-        if (e.metadata?.adversary) h += `<div class="rp-field"><span class="rp-key">ADVERSARY</span><span class="rp-val">${e.metadata.adversary}</span></div>`
+      h += '<div class="rp-chips">'
+      h += '<span class="badge" style="background:' + t.col + '22;color:' + t.col + '">' + t.level + '</span>'
+      h += sevChip(e.severity)
+      h += confChip(e.confidence, e.provenance)
+      h += freshChip(e.timestamp)
+      if (isInf) h += '<span class="badge inferred">INF</span>'
+      h += '</div>'
+      h += '<div class="rp-summary">'
+      h += '<span class="rp-key">' + e.source + '</span>'
+      h += '<span class="badge">' + e.entity_type.toUpperCase().replace('_',' ') + '</span>'
+      if (e.lat != null) h += '<span class="rp-coord">' + e.lat.toFixed(3) + ',' + e.lon.toFixed(3) + (isInf ? ' ~' : '') + '</span>'
+      h += '</div>'
+      h += '<div class="rp-expand" data-eid="' + expKey + '" onclick="S._toggleCard(this.dataset.eid)">' + (isExp ? 'COLLAPSE' : 'DETAILS') + '</div>'
+      if (isExp) {
+        h += '<div class="rp-details">'
+        h += '<div class="rp-field"><span class="rp-key">SOURCE</span><span class="rp-val">' + e.source + '</span></div>'
+        if (e.source_url) h += '<div class="rp-field"><span class="rp-key">URL</span><a href="' + e.source_url + '" target="_blank" class="rp-link">' + e.source_url.slice(0,55) + '</a></div>'
+        h += '<div class="rp-field"><span class="rp-key">TIME</span><span class="rp-val">' + e.timestamp + '</span></div>'
+        if (e.lat != null) h += '<div class="rp-field"><span class="rp-key">POS</span><span class="rp-val">' + e.lat.toFixed(4) + ', ' + e.lon.toFixed(4) + (isInf ? ' (inferred)' : '') + '</span></div>'
+        if (e.altitude != null) h += '<div class="rp-field"><span class="rp-key">ALT</span><span class="rp-val">' + e.altitude.toLocaleString() + ' ft</span></div>'
+        if (e.velocity != null) h += '<div class="rp-field"><span class="rp-key">VEL</span><span class="rp-val">' + e.velocity + ' kts</span></div>'
+        if (e.region) h += '<div class="rp-field"><span class="rp-key">REGION</span><span class="rp-val">' + e.region + '</span></div>'
+        if (e.description) h += '<div class="rp-field"><span class="rp-key">DESC</span><span class="rp-val">' + e.description.slice(0,200) + '</span></div>'
+        if (e.tags && e.tags.length > 0) h += '<div class="rp-field"><span class="rp-key">TAGS</span><span class="rp-val">' + e.tags.join(', ') + '</span></div>'
+        if (e.entity_type.startsWith('cyber_')) {
+          h += '<div class="rp-card cyber-card"><div class="card-header">CYBER INTEL</div>'
+          if (e.metadata && e.metadata.cve_id) h += '<div class="rp-field"><span class="rp-key">CVE</span><span class="rp-val">' + e.metadata.cve_id + '</span></div>'
+          if (e.metadata && e.metadata.vendor) h += '<div class="rp-field"><span class="rp-key">VENDOR</span><span class="rp-val">' + e.metadata.vendor + '</span></div>'
+          if (e.metadata && e.metadata.product) h += '<div class="rp-field"><span class="rp-key">PRODUCT</span><span class="rp-val">' + e.metadata.product + '</span></div>'
+          if (e.metadata && e.metadata.malware) h += '<div class="rp-field"><span class="rp-key">MALWARE</span><span class="rp-val">' + e.metadata.malware + '</span></div>'
+          if (e.metadata && e.metadata.ioc_value) h += '<div class="rp-field"><span class="rp-key">IOC</span><span class="rp-val mono">' + e.metadata.ioc_value + '</span></div>'
+          if (e.metadata && e.metadata.adversary) h += '<div class="rp-field"><span class="rp-key">ADVERSARY</span><span class="rp-val">' + e.metadata.adversary + '</span></div>'
+          h += '</div>'
+        }
+        if (e.entity_type.startsWith('gnss_')) {
+          h += '<div class="rp-card gnss-card"><div class="card-header">GNSS ANOMALY</div>'
+          if (e.metadata && e.metadata.type) h += '<div class="rp-field"><span class="rp-key">TYPE</span><span class="rp-val">' + e.metadata.type + '</span></div>'
+          if (e.metadata && e.metadata.radius_km) h += '<div class="rp-field"><span class="rp-key">RADIUS</span><span class="rp-val">' + e.metadata.radius_km + ' km</span></div>'
+          if (e.metadata && e.metadata.affected_systems) h += '<div class="rp-field"><span class="rp-key">AFFECTED</span><span class="rp-val">' + e.metadata.affected_systems + '</span></div>'
+          h += '</div>'
+        }
+        if (e.entity_type === 'social_post') {
+          h += '<div class="rp-card social-card"><div class="card-header">SOCIAL INTEL</div>'
+          if (e.metadata && e.metadata.subreddit) h += '<div class="rp-field"><span class="rp-key">SUB</span><span class="rp-val">r/' + e.metadata.subreddit + '</span></div>'
+          h += '<div class="rp-field"><span class="rp-key">SCORE</span><span class="rp-val">' + (e.metadata && e.metadata.score || 0) + ' | ' + (e.metadata && e.metadata.num_comments || 0) + ' cmt</span></div>'
+          if (e.metadata && e.metadata.geolocation_method) h += '<div class="rp-field"><span class="rp-key">GEO</span><span class="rp-val">' + e.metadata.geolocation_method + (e.metadata.matched_location ? ' (' + e.metadata.matched_location + ')' : '') + '</span></div>'
+          if (e.source_url) h += '<div class="rp-field"><a href="' + e.source_url + '" target="_blank" class="rp-link">View &#8594;</a></div>'
+          h += '</div>'
+        }
+        if (e.metadata && Object.keys(e.metadata).length > 0) {
+          h += '<div class="rp-meta-toggle" onclick="S._metaToggle(this)">RAW METADATA &#9660;</div>'
+          h += '<div class="rp-meta" style="display:none">'
+          Object.entries(e.metadata).forEach(function([k,v]) {
+            if (v != null && v !== '') h += '<div class="rp-field"><span class="rp-key">' + k + '</span><span class="rp-val mono">' + (typeof v === 'object' ? JSON.stringify(v) : String(v).slice(0,200)) + '</span></div>'
+          })
+          h += '</div>'
+        }
         h += '</div>'
       }
-
-      // GNSS card
-      if (e.entity_type.startsWith('gnss_')) {
-        h += '<div class="rp-card gnss-card">'
-        h += '<div class="card-header">GNSS ANOMALY</div>'
-        if (e.metadata?.type) h += `<div class="rp-field"><span class="rp-key">TYPE</span><span class="rp-val">${e.metadata.type}</span></div>`
-        if (e.metadata?.radius_km) h += `<div class="rp-field"><span class="rp-key">RADIUS</span><span class="rp-val">${e.metadata.radius_km} km</span></div>`
-        if (e.metadata?.affected_systems) h += `<div class="rp-field"><span class="rp-key">AFFECTED</span><span class="rp-val">${e.metadata.affected_systems}</span></div>`
-        h += '</div>'
-      }
-
-      // Social card
-      if (e.entity_type === 'social_post') {
-        h += '<div class="rp-card social-card">'
-        h += '<div class="card-header">SOCIAL INTELLIGENCE</div>'
-        if (e.metadata?.subreddit) h += `<div class="rp-field"><span class="rp-key">SUB</span><span class="rp-val">r/${e.metadata.subreddit}</span></div>`
-        h += `<div class="rp-field"><span class="rp-key">SCORE</span><span class="rp-val">${e.metadata?.score || 0} | ${e.metadata?.num_comments || 0} comments</span></div>`
-        if (e.metadata?.media_url) h += `<div class="rp-field"><span class="rp-key">MEDIA</span><a href="${e.metadata.media_url}" target="_blank" class="rp-link">${e.metadata.media_type}: ${e.metadata.media_url.slice(0, 50)}</a></div>`
-        if (e.metadata?.geolocation_method) h += `<div class="rp-field"><span class="rp-key">GEO METHOD</span><span class="rp-val">${e.metadata.geolocation_method}${e.metadata?.matched_location ? ' (' + e.metadata.matched_location + ')' : ''}</span></div>`
-        if (e.source_url) h += `<div class="rp-field"><a href="${e.source_url}" target="_blank" class="rp-link">View on Reddit \u2192</a></div>`
-        h += '</div>'
-      }
-
-      // Metadata dump
-      if (e.metadata && Object.keys(e.metadata).length > 0) {
-        h += '<div class="rp-meta-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">RAW METADATA \u25BC</div>'
-        h += '<div class="rp-meta" style="display:none">'
-        Object.entries(e.metadata).forEach(([k, v]) => {
-          if (v != null && v !== '') h += `<div class="rp-field"><span class="rp-key">${k}</span><span class="rp-val mono">${typeof v === 'object' ? JSON.stringify(v) : String(v).slice(0, 200)}</span></div>`
-        })
-        h += '</div>'
-      }
-
       h += '</div>'
     }
 
@@ -1230,6 +1226,8 @@
     _setDomain: function(d){ setActiveDomain(d) },
     _openDrawer: function(){ openDrawer("layers") },
     _closeDrawer: function(){ closeDrawer() },
+    _toggleCard: function(id){ toggleCardExpand(id) },
+    _metaToggle: function(el){ var s = el.nextElementSibling; if(s) s.style.display = s.style.display === 'none' ? 'block' : 'none' },
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
