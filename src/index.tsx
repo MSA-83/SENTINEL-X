@@ -688,48 +688,152 @@ app.get('/api/gnss/anomalies', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SOCIAL INTEL — Reddit public JSON
-// No key required for public subreddits. Rate limits apply.
+// SOCIAL INTEL — Multi-source: Mastodon + HackerNews + Reddit (fallback)
+// Mastodon: free public hashtag timelines, no auth required
+// HackerNews: Algolia Search API, no auth required
+// Reddit: public JSON (may return 403 from cloud IPs -- used as last fallback)
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/social/reddit', async (c) => {
-  const subs = [
-    { name: 'CombatFootage', tag: 'conflict-video' },
-    { name: 'UkraineWarVideoReport', tag: 'ukraine-video' },
-    { name: 'CredibleDefense', tag: 'military-analysis' },
-    { name: 'UkrainianConflict', tag: 'ukraine-news' },
-    { name: 'osint', tag: 'osint' },
-  ]
-
   const allEvents: CanonicalEvent[] = []
-  const results = await Promise.allSettled(
-    subs.map(sub =>
-      safeFetch(`https://www.reddit.com/r/${sub.name}/hot.json?limit=15&raw_json=1`, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/6.0; +https://github.com/MSA-83/SENTINEL-X)' }
-      }, 10000).then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+
+  // ── Mastodon public hashtag timelines (no auth, rate-limit friendly) ──────
+  const HASHTAGS = [
+    { tag: 'osint',         label: 'osint' },
+    { tag: 'infosec',       label: 'cyber' },
+    { tag: 'cybersecurity', label: 'cyber' },
+    { tag: 'ukraine',       label: 'ukraine-conflict' },
+    { tag: 'geopolitics',   label: 'geopolitics' },
+  ]
+  const mastoResults = await Promise.allSettled(
+    HASHTAGS.map(h =>
+      safeJson('https://mastodon.social/api/v1/timelines/tag/' + h.tag + '?limit=12', {}, 10000)
+        .then((posts: any) => {
+          const arr: any[] = Array.isArray(posts) ? posts : []
+          return arr.filter((p: any) => p.visibility === 'public').map((p: any) => {
+            const rawText = (p.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+            const geo = geocodeFromText(rawText)
+            return evt({
+              id: 'masto_' + h.tag + '_' + p.id,
+              entity_type: 'social_post',
+              source: 'Mastodon #' + h.tag,
+              source_url: p.url || '',
+              title: (rawText || ('Post by ' + (p.account?.display_name || 'unknown'))).slice(0, 200),
+              description: '@' + (p.account?.acct || ''),
+              lat: geo?.lat ?? null, lon: geo?.lon ?? null, region: geo?.region || '',
+              timestamp: p.created_at || '',
+              confidence: geo ? geo.confidence : 0,
+              severity: 'info',
+              tags: [h.label, 'mastodon', h.tag],
+              provenance: geo ? 'geocoded-inferred' : 'no-location',
+              metadata: {
+                subreddit: 'mastodon/' + h.tag,
+                author: p.account?.display_name || '',
+                score: (p.favourites_count || 0) + (p.reblogs_count || 0),
+                num_comments: p.replies_count || 0,
+                media_url: p.media_attachments?.[0]?.url || '',
+                media_type: p.media_attachments?.[0]?.type || 'text',
+                thumbnail: p.media_attachments?.[0]?.preview_url || '',
+                nsfw: p.sensitive || false,
+                flair: '#' + h.tag,
+                external_url: p.url || '',
+                matched_location: geo?.matched || null,
+                geolocation_method: geo ? 'text-inference' : 'none',
+              }
+            })
+          })
+        })
+        .catch(() => [] as CanonicalEvent[])
+    )
+  )
+  mastoResults.forEach(r => { if (r.status === 'fulfilled') allEvents.push(...r.value) })
+
+  // ── HackerNews via Algolia Search API (security / OSINT / conflict topics) ─
+  const HN_QUERIES = [
+    'cybersecurity attack vulnerability exploit',
+    'OSINT intelligence surveillance tracking',
+    'ukraine russia military conflict airstrike',
+    'cyber attack ransomware malware breach',
+  ]
+  const hnResults = await Promise.allSettled(
+    HN_QUERIES.map(q =>
+      safeJson(
+        'https://hn.algolia.com/api/v1/search_by_date?query=' + encodeURIComponent(q) +
+        '&tags=story&hitsPerPage=12',
+        {}, 8000
+      ).then((data: any) => {
+        return (data.hits || []).map((hit: any) => {
+          const title = (hit.title || '').trim()
+          if (!title) return null
+          const geo = geocodeFromText(title)
+          let hostname = ''
+          try { hostname = new URL(hit.url || 'https://news.ycombinator.com').hostname } catch {}
+          return evt({
+            id: 'hn_' + hit.objectID,
+            entity_type: 'social_post',
+            source: 'HackerNews',
+            source_url: 'https://news.ycombinator.com/item?id=' + hit.objectID,
+            title: title.slice(0, 200),
+            description: hostname ? ('via ' + hostname) : '',
+            lat: geo?.lat ?? null, lon: geo?.lon ?? null, region: geo?.region || '',
+            timestamp: hit.created_at || '',
+            confidence: geo ? geo.confidence : 0,
+            severity: 'info',
+            tags: ['hackernews', q.split(' ')[0].toLowerCase()],
+            provenance: geo ? 'geocoded-inferred' : 'no-location',
+            metadata: {
+              subreddit: 'hackernews',
+              author: hit.author || '',
+              score: hit.points || 0,
+              num_comments: hit.num_comments || 0,
+              media_url: '', media_type: 'link', thumbnail: '',
+              nsfw: false, flair: 'HN',
+              external_url: hit.url || '',
+              matched_location: geo?.matched || null,
+              geolocation_method: geo ? 'text-inference' : 'none',
+            }
+          })
+        }).filter(Boolean)
+      })
+      .catch(() => [] as CanonicalEvent[])
+    )
+  )
+  hnResults.forEach(r => { if (r.status === 'fulfilled') allEvents.push(...(r.value as CanonicalEvent[])) })
+
+  // ── Reddit fallback (may return 403 from cloud/edge IPs) ──────────────────
+  const SUBS = [
+    { name: 'CombatFootage',   tag: 'conflict-video' },
+    { name: 'CredibleDefense', tag: 'military-analysis' },
+    { name: 'osint',           tag: 'osint' },
+  ]
+  const redditResults = await Promise.allSettled(
+    SUBS.map(sub =>
+      safeFetch('https://www.reddit.com/r/' + sub.name + '/hot.json?limit=10&raw_json=1', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/6.2; OSINT-platform)' }
+      }, 8000).then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status)
         return r.json()
       }).then((data: any) => {
         return (data?.data?.children || []).map((child: any) => {
           const p = child.data
           if (!p) return null
-          // Media extraction
-          let media_url = ''
-          let media_type = 'text'
+          let media_url = '', media_type = 'text'
           if (p.is_video && p.media?.reddit_video?.fallback_url) { media_url = p.media.reddit_video.fallback_url; media_type = 'video' }
           else if (p.url && /\.(mp4|webm|mov)/i.test(p.url)) { media_url = p.url; media_type = 'video' }
           else if (p.url && /v\.redd\.it|streamable|youtube|youtu\.be/i.test(p.url)) { media_url = p.url; media_type = 'video_link' }
           else if (p.url && /\.(jpg|jpeg|png|gif|webp)/i.test(p.url)) { media_url = p.url; media_type = 'image' }
-
           const geo = geocodeFromText(p.title || '')
           return evt({
-            id: `reddit_${p.id}`, entity_type: 'social_post',
-            source: `Reddit r/${sub.name}`, source_url: `https://reddit.com${p.permalink}`,
+            id: 'reddit_' + p.id,
+            entity_type: 'social_post',
+            source: 'Reddit r/' + sub.name,
+            source_url: 'https://reddit.com' + p.permalink,
             title: (p.title || '').slice(0, 200),
             description: (p.selftext || '').slice(0, 200),
             lat: geo?.lat ?? null, lon: geo?.lon ?? null, region: geo?.region || '',
             timestamp: p.created_utc ? new Date(p.created_utc * 1000).toISOString() : '',
             confidence: geo ? geo.confidence : 0,
-            severity: 'info', tags: [sub.tag, p.link_flair_text || ''].filter(Boolean),
+            severity: 'info',
+            tags: [sub.tag, p.link_flair_text || ''].filter(Boolean),
             provenance: geo ? 'geocoded-inferred' : 'no-location',
             metadata: {
               subreddit: sub.name, author: p.author || '', score: p.score || 0,
@@ -744,19 +848,23 @@ app.get('/api/social/reddit', async (c) => {
       }).catch(() => [] as CanonicalEvent[])
     )
   )
+  redditResults.forEach(r => { if (r.status === 'fulfilled') allEvents.push(...r.value) })
 
-  results.forEach(r => { if (r.status === 'fulfilled') allEvents.push(...r.value) })
-  allEvents.sort((a, b) => ((b.metadata.score as number) || 0) - ((a.metadata.score as number) || 0))
-  const geolocated = allEvents.filter(e => e.lat !== null)
-
+  // ── Deduplicate, sort by score, return ────────────────────────────────────
+  const seen = new Set<string>()
+  const unique = allEvents.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true })
+  unique.sort((a, b) => ((b.metadata.score as number) || 0) - ((a.metadata.score as number) || 0))
+  const geolocated = unique.filter(e => e.lat !== null)
   return c.json({
-    events: allEvents.slice(0, 60),
-    total: allEvents.length,
+    events: unique.slice(0, 80),
+    total: unique.length,
     geolocated: geolocated.length,
-    source: 'reddit-public',
-    note: 'Reddit public JSON API. No authentication required. Locations are inferred from post titles and marked as low-confidence.'
+    source: 'multi-social',
+    sources: ['mastodon', 'hackernews', 'reddit-fallback'],
+    note: 'Mastodon public hashtag timelines (#osint #infosec #ukraine), HackerNews Algolia search (security/OSINT topics), Reddit public JSON (may be blocked from cloud IPs). Locations inferred from text -- always low-confidence.',
   })
 })
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // FUSION — Threat zones
@@ -810,7 +918,9 @@ app.get('/api/status', (c) => {
 // Source health endpoint — probes free sources with latency measurement
 app.get("/api/sources/health", async (c) => {
   const FREE_PROBES = [
-    { name: "OpenSky ADS-B",   key: "opensky",   url: "https://opensky-network.org/api/states/all?lamin=35&lamax=36&lomin=14&lomax=15" },
+    { name: "adsb.one ADS-B",    key: "opensky",   url: "https://api.adsb.one/v2/point/20/10/100" },
+    { name: "Mastodon OSINT",    key: "mastodon",  url: "https://mastodon.social/api/v1/timelines/tag/osint?limit=1" },
+    { name: "HackerNews Algolia",key: "hackernews",url: "https://hn.algolia.com/api/v1/search?query=security&tags=story&hitsPerPage=1" },
     { name: "USGS Seismic",    key: "usgs",      url: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson" },
     { name: "GDELT 2.0",       key: "gdelt",     url: "https://api.gdeltproject.org/api/v2/doc/doc?query=test&mode=artlist&maxrecords=1&format=json" },
     { name: "ReliefWeb",       key: "reliefweb", url: "https://api.reliefweb.int/v1/disasters?appname=sentinel-os-osint&limit=1" },
