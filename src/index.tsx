@@ -33,7 +33,7 @@ type Bindings = {
 const app = new Hono<{ Bindings: Bindings }>()
 app.use('/api/*', cors())
 
-const VERSION = '6.1.0'
+const VERSION = '6.2.0'
 const UA = `SENTINEL-OS/${VERSION} (OSINT Platform)`
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -491,7 +491,6 @@ app.get('/api/cyber/cisa-kev', async (c) => {
       description: v.shortDescription || '',
       timestamp: v.dateAdded || '', severity: 'high', risk_score: 75,
       confidence: 95, tags: ['cisa-kev', 'known-exploited', v.vendorProject || '', v.product || ''].filter(Boolean),
-      raw_payload_hash: hashPayload(partial),
     provenance: 'direct-api',
       metadata: { cve_id: v.cveID, vendor: v.vendorProject, product: v.product, required_action: v.requiredAction, due_date: v.dueDate, known_ransomware: v.knownRansomwareCampaignUse }
     }))
@@ -593,7 +592,6 @@ app.get('/api/cyber/threatfox', async (c) => {
         timestamp: ioc.first_seen_utc || '', confidence: ioc.confidence_level || 70,
         severity: (ioc.threat_type || '').includes('botnet') ? 'high' : 'medium',
         tags: (ioc.tags || []).concat([ioc.malware || '', ioc.threat_type || '']).filter(Boolean),
-        raw_payload_hash: hashPayload(partial),
     provenance: 'direct-api',
         metadata: { ioc_type: ioc.ioc_type, ioc_value: ioc.ioc_value, malware: ioc.malware, malware_alias: ioc.malware_alias, threat_type: ioc.threat_type, reporter: ioc.reporter, reference: ioc.reference }
       }))
@@ -882,6 +880,181 @@ app.get('/', (c) => {
 <\/script>
 </body>
 </html>`)
+})
+
+// 
+// =============================================================================
+// DOMAIN-SPECIFIC ROUTES — GPS, Conflict, Air, Sea, Space, Weather, Fusion
+// =============================================================================
+
+// u2500u2500u2500 GPS/GNSS ALIAS ROUTES u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500
+app.get('/api/gps/anomalies', (c) => c.redirect('/api/gnss/anomalies', 307))
+app.get('/api/gps/zones', (c) => c.json({ events: GNSS_ZONES, count: GNSS_ZONES.length, source: 'gnss-reference-model' }))
+
+// CONFLICT domain routes
+app.post('/api/conflict/events', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const cat = (body as any).category || 'conflict'
+  const gdeltUrl = cat === 'nuclear'
+    ? 'https://api.gdeltproject.org/api/v2/doc/doc?query=nuclear+missile+ICBM+warhead&mode=artlist&maxrecords=25&format=json&timespan=72h&sourcelang=english'
+    : 'https://api.gdeltproject.org/api/v2/doc/doc?query=military+attack+airstrike+conflict&mode=artlist&maxrecords=50&format=json&timespan=48h&sourcelang=english'
+  const data = await fetchGDELT(gdeltUrl)
+  if (!data) return c.json({ events: [], _upstream_error: true, message: 'GDELT unavailable' })
+  const arts = (data.articles || []) as any[]
+  const events: CanonicalEvent[] = arts.map((art, i) => {
+    const geo = geocodeFromText(art.title || '')
+    if (!geo) return null
+    return evt({
+      id: 'conflict_' + cat + '_' + i,
+      entity_type: cat === 'nuclear' ? 'nuclear_intel' : 'conflict_intel',
+      source: 'GDELT 2.0', source_url: art.url || '', title: art.title || '',
+      lat: geo.lat, lon: geo.lon, region: geo.region,
+      timestamp: art.seendate || '', confidence: geo.confidence,
+      severity: 'medium', tags: [cat, geo.matched],
+      provenance: 'geocoded-inferred',
+      metadata: { domain: art.domain, matched_location: geo.matched }
+    })
+  }).filter(Boolean) as CanonicalEvent[]
+  return c.json({ events, total: arts.length, geocoded: events.length, source: 'gdelt' })
+})
+app.get('/api/conflict/zones', (c) => c.json({ zones: FUSION_ZONES, source: 'fusion-reference' }))
+
+// AIR domain
+app.get('/api/air/traffic', async (c) => {
+  try {
+    const data = await safeJson('https://opensky-network.org/api/states/all', {}, 15000) as any
+    if (!data?.states) return c.json({ events: [], count: 0, source: 'opensky' })
+    const events: CanonicalEvent[] = (data.states as any[][])
+      .filter((s: any) => s[6] != null && s[5] != null && s[8] === false)
+      .slice(0, 300)
+      .map((s: any, i: number) => {
+        const cs = (s[1] || '').trim()
+        return evt({
+          id: 'air_' + i, entity_type: 'aircraft',
+          source: 'OpenSky Network', source_url: 'https://opensky-network.org/',
+          title: cs || 'ICAO:' + s[0], lat: s[6], lon: s[5],
+          altitude: s[7] != null ? Math.round(s[7] * 3.28084) : null,
+          velocity: s[9] != null ? Math.round(s[9] * 1.944) : null,
+          confidence: 95, severity: 'info', tags: ['aircraft', 'adsb'],
+          metadata: { icao24: s[0], callsign: cs, origin_country: s[2] }
+        })
+      })
+    return c.json({ events, count: events.length, source: 'opensky' })
+  } catch (error) { return c.json(upstreamError('opensky', 0, String(error))) }
+})
+
+// SEA domain
+app.get('/api/sea/vessels', async (c) => {
+  const token = c.env.GFW_TOKEN
+  if (token) {
+    try {
+      const hdrs = { Authorization: 'Bearer ' + token }
+      const u1 = 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-fishing-events:latest&limit=50'
+      const u2 = 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-gaps-events:latest&limit=30'
+      const [fishR, gapR] = await Promise.allSettled([safeJson(u1,{headers:hdrs},12000), safeJson(u2,{headers:hdrs},12000)])
+      const vessels: CanonicalEvent[] = []
+      const addV = (raw: any, type: string, prefix: string) => {
+        const entries = Array.isArray(raw) ? raw : (raw?.entries || [])
+        entries.slice(0, 40).forEach((ev: any, i: number) => {
+          const lat = ev.position?.lat, lon = ev.position?.lon
+          if (lat == null || lon == null) return
+          const v = ev.vessel || {}, name = v.name || 'MMSI:' + (v.ssvid || i)
+          vessels.push(evt({
+            id: prefix + i, entity_type: type,
+            source: 'Global Fishing Watch', source_url: 'https://globalfishingwatch.org/',
+            title: (type === 'dark_vessel' ? 'DARK ' : '') + name, lat, lon,
+            confidence: 80, severity: type === 'dark_vessel' ? 'medium' : 'low',
+            tags: [type === 'dark_vessel' ? 'ais-gap' : 'fishing'],
+            metadata: { mmsi: v.ssvid, flag: v.flag, gap_hours: ev.gap_hours }
+          }))
+        })
+      }
+      if (fishR.status === 'fulfilled') addV(fishR.value, 'fishing_vessel', 'gfw_fish_')
+      if (gapR.status === 'fulfilled') addV(gapR.value, 'dark_vessel', 'gfw_gap_')
+      if (vessels.length > 0) return c.json({ events: vessels, count: vessels.length, source: 'gfw' })
+    } catch { /* fall through */ }
+  }
+  try {
+    const mUrl = 'https://api.gdeltproject.org/api/v2/doc/doc?query=navy+warship+maritime+vessel+shipping&mode=artlist&maxrecords=25&format=json&timespan=48h&sourcelang=english'
+    const data = await fetchGDELT(mUrl)
+    if (data?.articles) {
+      const events = (data.articles as any[]).slice(0, 20).map((art: any, i: number) => {
+        const geo = geocodeFromText(art.title || '')
+        if (!geo) return null
+        return evt({ id: 'maritime_' + i, entity_type: 'ship', source: 'GDELT Maritime',
+          source_url: art.url || '', title: art.title || '',
+          lat: geo.lat, lon: geo.lon, region: geo.region, timestamp: art.seendate || '',
+          confidence: geo.confidence, severity: 'info', tags: ['maritime', geo.matched],
+          provenance: 'geocoded-inferred', metadata: { domain: art.domain } })
+      }).filter(Boolean) as CanonicalEvent[]
+      return c.json({ events, count: events.length, source: 'gdelt-maritime', note: 'Configure GFW_TOKEN for live AIS.' })
+    }
+  } catch { /* ignore */ }
+  return c.json({ events: [], count: 0, source: 'sea', note: 'GFW_TOKEN required for live AIS data.' })
+})
+
+// SPACE domain
+app.get('/api/space/satellites', async (c) => {
+  try {
+    const data = await safeJson('https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=json', {}, 12000) as any[]
+    if (Array.isArray(data) && data.length > 0) {
+      const events: CanonicalEvent[] = data.slice(0, 50).map((sat: any, i: number) => evt({
+        id: 'space_' + i, entity_type: 'satellite',
+        source: 'CelesTrak', source_url: 'https://celestrak.org/',
+        title: sat.OBJECT_NAME || 'NORAD:' + sat.NORAD_CAT_ID, lat: null, lon: null,
+        confidence: 90, severity: 'info', tags: ['satellite'],
+        metadata: { norad_id: sat.NORAD_CAT_ID, epoch: sat.EPOCH, inclination: sat.INCLINATION }
+      }))
+      return c.json({ events, count: events.length, source: 'celestrak' })
+    }
+    return c.json(upstreamError('celestrak', 0, 'No data'))
+  } catch (error) { return c.json(upstreamError('celestrak', 0, String(error))) }
+})
+
+// WEATHER storm events
+app.get('/api/weather/storm-events', async (c) => {
+  try {
+    const data = await safeJson('https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?eventlist=TC,TS,FL&alertlevel=Green;Orange;Red', {}, 12000) as any
+    const features = (data?.features || []) as any[]
+    const events: CanonicalEvent[] = features.map((f: any, i: number) => {
+      const p = f.properties || {}, coords = f.geometry?.coordinates || []
+      if (!coords[1] || !coords[0]) return null
+      const alert = (p.alertlevel || '').toLowerCase()
+      return evt({ id: 'storm_' + i, entity_type: 'weather',
+        source: 'GDACS', source_url: 'https://www.gdacs.org/',
+        title: (p.eventtype || 'STORM') + ' ' + (p.eventname || p.country || 'Unknown'),
+        lat: coords[1], lon: coords[0], confidence: 90,
+        severity: alert === 'red' ? 'critical' : alert === 'orange' ? 'high' : 'medium',
+        tags: ['storm', p.eventtype || ''], metadata: { alert_level: p.alertlevel, country: p.country } })
+    }).filter(Boolean) as CanonicalEvent[]
+    return c.json({ events, count: events.length, source: 'gdacs-weather' })
+  } catch (error) { return c.json(upstreamError('gdacs', 0, String(error))) }
+})
+
+// FUSION GLOBAL
+app.get('/api/fusion/global', async (c) => {
+  return c.json({
+    timestamp: new Date().toISOString(),
+    version: VERSION,
+    platform: 'SENTINEL OS',
+    status: 'operational',
+    threat_zones: FUSION_ZONES,
+    gnss_zones: GNSS_ZONES.length,
+    domain_coverage: {
+      air: true, sea: true, space: true,
+      weather: Boolean(c.env.OWM_KEY), wildfire: Boolean(c.env.NASA_FIRMS_KEY),
+      conflict: true, cyber: true, gnss: true, social: true,
+      maritime_live: Boolean(c.env.GFW_TOKEN), satellites_live: Boolean(c.env.N2YO_KEY),
+    },
+    free_sources: ['opensky','usgs','gdelt','reliefweb','gdacs','cisa-kev','urlhaus','threatfox','otx','reddit','celestrak','wheretheiss'],
+    keyed_sources: {
+      NASA_FIRMS_KEY: Boolean(c.env.NASA_FIRMS_KEY), OWM_KEY: Boolean(c.env.OWM_KEY),
+      N2YO_KEY: Boolean(c.env.N2YO_KEY), GFW_TOKEN: Boolean(c.env.GFW_TOKEN),
+      ACLED_KEY: Boolean(c.env.ACLED_KEY), SHODAN_KEY: Boolean(c.env.SHODAN_KEY),
+      NEWS_API_KEY: Boolean(c.env.NEWS_API_KEY), OTX_KEY: Boolean(c.env.OTX_KEY),
+      RAPIDAPI_KEY: Boolean(c.env.RAPIDAPI_KEY), AISSTREAM_KEY: Boolean(c.env.AISSTREAM_KEY),
+    },
+  })
 })
 
 export default app
