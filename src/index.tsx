@@ -28,6 +28,13 @@ type Bindings = {
   AISSTREAM_KEY?: string
   OTX_KEY?: string
   ACLED_EMAIL?: string
+  ABUSECH_KEY?: string
+  SPACETRACK_USER?: string
+  SPACETRACK_PASS?: string
+  CESIUM_TOKEN?: string
+  COPERNICUS_CLIENT_ID?: string
+  COPERNICUS_CLIENT_SECRET?: string
+  PLANET_API_KEY?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
