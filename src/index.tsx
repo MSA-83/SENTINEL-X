@@ -1,5 +1,5 @@
 /**
- * SENTINEL OS v6.1 — Global Multi-Domain Situational Awareness Platform
+ * SENTINEL OS v7.0 — Global Multi-Domain Situational Awareness Platform
  * Secure Edge BFF (Backend-for-Frontend) on Cloudflare Pages
  *
  * Architecture:
@@ -23,18 +23,17 @@ type Bindings = {
   AVWX_KEY?: string
   RAPIDAPI_KEY?: string
   ACLED_KEY?: string
+  ACLED_EMAIL?: string
   SHODAN_KEY?: string
   NEWS_API_KEY?: string
   AISSTREAM_KEY?: string
   OTX_KEY?: string
-  ACLED_KEY?: string
-  ACLED_EMAIL?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
 app.use('/api/*', cors())
 
-const VERSION = '6.1.0'
+const VERSION = '7.0.0'
 const UA = `SENTINEL-OS/${VERSION} (OSINT Platform)`
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -293,6 +292,89 @@ app.get('/api/weather/global', async (c) => {
     const list = results.filter(r => r.status === 'fulfilled' && (r as any).value?.coord).map(r => (r as PromiseFulfilledResult<any>).value)
     return c.json({ events: list, count: list.length, source: 'openweathermap' })
   } catch (error) { return c.json(upstreamError('owm', 0, String(error))) }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEATHER — Open-Meteo multi-city (free, no key required)
+// Fetches the same 20 cities as the OWM endpoint using the Open-Meteo API.
+// https://open-meteo.com/
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Map WMO weather-code → a human-readable description */
+function wmoCodeToDescription(code: number): string {
+  if (code === 0) return 'Clear sky'
+  if (code <= 2) return 'Partly cloudy'
+  if (code === 3) return 'Overcast'
+  if (code <= 9) return 'Fog / Depositing rime fog'
+  if (code <= 19) return 'Drizzle'
+  if (code <= 29) return 'Rain'
+  if (code <= 39) return 'Snow'
+  if (code <= 49) return 'Freezing rain'
+  if (code <= 59) return 'Rain showers'
+  if (code <= 69) return 'Snow showers'
+  if (code <= 79) return 'Thunderstorm'
+  if (code <= 89) return 'Heavy thunderstorm'
+  return 'Unknown'
+}
+
+app.get('/api/weather/openmeteo', async (c) => {
+  try {
+    const results = await Promise.allSettled(
+      WEATHER_CITIES.map(city => {
+        const url =
+          `https://api.open-meteo.com/v1/forecast` +
+          `?latitude=${city.lat}&longitude=${city.lon}` +
+          `&current=temperature_2m,wind_speed_10m,wind_direction_10m,` +
+          `relative_humidity_2m,apparent_temperature,precipitation,weather_code` +
+          `&timezone=auto`
+        return safeJson(url, {}, 8000).then(d => ({ ...d, _city: city.name, _lat: city.lat, _lon: city.lon }))
+      })
+    )
+
+    const events: CanonicalEvent[] = results
+      .filter(r => r.status === 'fulfilled' && (r as PromiseFulfilledResult<any>).value?.current)
+      .map((r, i) => {
+        const d = (r as PromiseFulfilledResult<any>).value
+        const cur = d.current
+        const code = cur.weather_code ?? 0
+        const desc = wmoCodeToDescription(code)
+        const windSpd: number = cur.wind_speed_10m ?? 0
+        // Severity heuristics: heavy precipitation or strong winds
+        const severity = windSpd > 60 ? 'critical' : windSpd > 40 ? 'high' : windSpd > 20 ? 'medium' : 'low'
+        return evt({
+          id: `openmeteo_${d._city.toLowerCase().replace(/\s+/g, '_')}_${i}`,
+          entity_type: 'weather_observation',
+          source: 'Open-Meteo',
+          source_url: 'https://open-meteo.com/',
+          title: `${d._city}: ${desc}, ${cur.temperature_2m}°C`,
+          description: `Wind ${windSpd} km/h ${cur.wind_direction_10m}°, Humidity ${cur.relative_humidity_2m}%, Feels like ${cur.apparent_temperature}°C, Precipitation ${cur.precipitation} mm`,
+          lat: d._lat,
+          lon: d._lon,
+          region: GEO_DB[d._city.toLowerCase()]?.region || '',
+          timestamp: cur.time || new Date().toISOString(),
+          observed_at: cur.time || new Date().toISOString(),
+          confidence: 90,
+          severity,
+          risk_score: Math.min(100, Math.round(windSpd * 0.8 + (cur.precipitation ?? 0) * 2)),
+          tags: ['weather', 'open-meteo', desc.toLowerCase().replace(/\s+/g, '-')],
+          provenance: 'direct-api',
+          metadata: {
+            temperature_2m: cur.temperature_2m,
+            apparent_temperature: cur.apparent_temperature,
+            wind_speed_10m: windSpd,
+            wind_direction_10m: cur.wind_direction_10m,
+            relative_humidity_2m: cur.relative_humidity_2m,
+            precipitation: cur.precipitation,
+            weather_code: code,
+            timezone: d.timezone,
+          },
+        })
+      })
+
+    return c.json({ events, count: events.length, source: 'open-meteo', note: 'Free weather data — no API key required' })
+  } catch (error) {
+    return c.json(upstreamError('open-meteo', 0, String(error)))
+  }
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -593,9 +675,9 @@ app.get('/api/cyber/threatfox', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// GNSS ANOMALY LAYER — GPS jamming / spoofing reference data + news
+// GNSS ANOMALY LAYER — GPS jamming / spoofing reference data + live heatmap
 // Sources: Curated from GPSJam.org, Eurocontrol, EASA, C4ADS reports
-// No live API available — this is a reference model enriched with GDELT news
+// Also attempts to fetch the GPSJam.org live heatmap API (best-effort).
 // ═══════════════════════════════════════════════════════════════════════════════
 const GNSS_ZONES: CanonicalEvent[] = [
   { id: 'gnss_ua_east', entity_type: 'gnss_jamming', source: 'GPSJam.org / ADS-B analysis', source_url: 'https://gpsjam.org/', title: 'Ukraine — Eastern Front', description: 'Active GPS jamming from Russian EW systems (Krasukha-4, Pole-21). Continuous.', lat: 48.5, lon: 37.0, altitude: null, velocity: null, heading: null, timestamp: new Date().toISOString(), observed_at: new Date().toISOString(), confidence: 90, severity: 'critical', risk_score: 85, region: 'Eastern Europe', tags: ['military-jamming', 'continuous', 'GPS', 'GLONASS'], correlations: ['gnss_black_sea'], metadata: { radius_km: 300, affected_systems: 'All GNSS', type: 'military_jamming' }, provenance: 'curated-reference' },
@@ -613,7 +695,38 @@ const GNSS_ZONES: CanonicalEvent[] = [
 ]
 
 app.get('/api/gnss/anomalies', async (c) => {
-  // Enrich with GDELT GNSS news
+  // ── 1. Attempt live heatmap fetch from gpsjam.org (best-effort) ──────────────
+  let gpsjamEvents: CanonicalEvent[] = []
+  try {
+    const heatmapData = await safeJson('https://gpsjam.org/api/v1/heatmap', {}, 8000)
+    if (heatmapData && Array.isArray(heatmapData.data)) {
+      gpsjamEvents = heatmapData.data
+        .filter((pt: any) => pt.lat !== undefined && pt.lon !== undefined && (pt.level ?? 0) > 1)
+        .slice(0, 50)
+        .map((pt: any, i: number) => evt({
+          id: `gpsjam_live_${i}`,
+          entity_type: pt.level >= 3 ? 'gnss_jamming' : 'gnss_anomaly',
+          source: 'GPSJam.org (live heatmap)',
+          source_url: 'https://gpsjam.org/',
+          title: `GPSJam Live: interference level ${pt.level ?? '?'} at (${pt.lat.toFixed(2)}, ${pt.lon.toFixed(2)})`,
+          description: `ADS-B derived GNSS interference. Level ${pt.level ?? '?'}/5.`,
+          lat: pt.lat,
+          lon: pt.lon,
+          timestamp: pt.time || new Date().toISOString(),
+          observed_at: pt.time || new Date().toISOString(),
+          confidence: 60,
+          severity: (pt.level ?? 0) >= 4 ? 'high' : 'medium',
+          risk_score: Math.min(100, (pt.level ?? 1) * 20),
+          tags: ['gnss-live', 'gpsjam', 'adsb-derived'],
+          provenance: 'direct-api',
+          metadata: { level: pt.level, raw: pt },
+        }))
+    }
+  } catch {
+    // GPSJam live API is optional — proceed with curated zones only
+  }
+
+  // ── 2. Enrich with GDELT GNSS-related news (best-effort) ────────────────────
   let newsEvents: CanonicalEvent[] = []
   try {
     const data = await fetchGDELT('https://api.gdeltproject.org/api/v2/doc/doc?query=GPS+jamming+spoofing+GNSS+interference+navigation&mode=artlist&maxrecords=15&format=json&timespan=72h&sourcelang=english')
@@ -633,17 +746,18 @@ app.get('/api/gnss/anomalies', async (c) => {
   } catch { /* GDELT enrichment is optional */ }
 
   return c.json({
-    events: [...GNSS_ZONES, ...newsEvents],
+    events: [...GNSS_ZONES, ...gpsjamEvents, ...newsEvents],
     zones: GNSS_ZONES.length,
+    live: gpsjamEvents.length,
     news: newsEvents.length,
     source: 'gnss-reference-model',
     sources_info: [
-      { name: 'GPSJam.org', url: 'https://gpsjam.org/', free: true, key_required: false, description: 'Daily ADS-B-based GPS interference maps' },
+      { name: 'GPSJam.org', url: 'https://gpsjam.org/', free: true, key_required: false, description: 'Daily ADS-B-based GPS interference maps + live heatmap API' },
       { name: 'Eurocontrol', url: 'https://www.eurocontrol.int/', free: true, key_required: false, description: 'European GNSS interference reports' },
       { name: 'C4ADS', url: 'https://c4ads.org/', free: true, key_required: false, description: 'GPS spoofing research' },
       { name: 'EASA', url: 'https://www.easa.europa.eu/', free: true, key_required: false, description: 'Aviation safety bulletins' },
     ],
-    note: 'GNSS anomaly data is a curated reference model. No free real-time GNSS API exists. GPSJam.org provides daily maps at https://gpsjam.org/'
+    note: 'GNSS anomaly data combines a curated reference model with best-effort live data from GPSJam.org. No free real-time GNSS API is guaranteed available.'
   })
 })
 
@@ -664,7 +778,7 @@ app.get('/api/social/reddit', async (c) => {
   const results = await Promise.allSettled(
     subs.map(sub =>
       safeFetch(`https://www.reddit.com/r/${sub.name}/hot.json?limit=15&raw_json=1`, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/6.0; +https://github.com/MSA-83/SENTINEL-X)' }
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/7.0; +https://github.com/MSA-83/SENTINEL-X)' }
       }, 10000).then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json()
@@ -719,6 +833,92 @@ app.get('/api/social/reddit', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SOCIAL INTEL — Mastodon public timelines
+// Fetches OSINT/conflict/cybersecurity hashtags from mastodon.social (no key).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Mastodon instance / hashtag pairs to poll */
+const MASTODON_FEEDS = [
+  { instance: 'mastodon.social', tag: 'osint' },
+  { instance: 'mastodon.social', tag: 'ukraine' },
+  { instance: 'mastodon.social', tag: 'cybersecurity' },
+  { instance: 'infosec.exchange', tag: 'infosec' },
+  { instance: 'infosec.exchange', tag: 'malware' },
+]
+
+app.get('/api/social/mastodon', async (c) => {
+  const allEvents: CanonicalEvent[] = []
+
+  const results = await Promise.allSettled(
+    MASTODON_FEEDS.map(feed => {
+      const url = `https://${feed.instance}/api/v1/timelines/tag/${encodeURIComponent(feed.tag)}?limit=20`
+      return safeFetch(url, {
+        headers: { 'User-Agent': UA, 'Accept': 'application/json' }
+      }, 10000)
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`)
+          return r.json()
+        })
+        .then((statuses: any[]) => {
+          return statuses.map((s: any, i: number) => {
+            // Strip HTML tags from content for plain text
+            const plainText = (s.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+            const geo = geocodeFromText(plainText)
+            return evt({
+              id: `mastodon_${feed.instance}_${feed.tag}_${s.id || i}`,
+              entity_type: 'social_post',
+              source: `Mastodon ${feed.instance} #${feed.tag}`,
+              source_url: s.url || `https://${feed.instance}`,
+              title: plainText.slice(0, 160) || `#${feed.tag} post`,
+              description: plainText,
+              lat: geo?.lat ?? null,
+              lon: geo?.lon ?? null,
+              region: geo?.region || '',
+              timestamp: s.created_at || new Date().toISOString(),
+              observed_at: s.created_at || new Date().toISOString(),
+              confidence: geo ? geo.confidence : 0,
+              severity: 'info',
+              tags: [feed.tag, 'mastodon', ...(s.tags || []).map((t: any) => t.name || '').filter(Boolean)].slice(0, 10),
+              provenance: geo ? 'geocoded-inferred' : 'no-location',
+              metadata: {
+                instance: feed.instance,
+                hashtag: feed.tag,
+                account: s.account?.acct || '',
+                display_name: s.account?.display_name || '',
+                replies_count: s.replies_count || 0,
+                reblogs_count: s.reblogs_count || 0,
+                favourites_count: s.favourites_count || 0,
+                media_attachments: (s.media_attachments || []).map((m: any) => ({ type: m.type, url: m.url || m.remote_url || '' })).slice(0, 3),
+                matched_location: geo?.matched || null,
+                geolocation_method: geo ? 'text-inference' : 'none',
+              },
+            })
+          }).filter(Boolean) as CanonicalEvent[]
+        })
+        .catch(() => [] as CanonicalEvent[])
+    })
+  )
+
+  results.forEach(r => { if (r.status === 'fulfilled') allEvents.push(...r.value) })
+  // Deduplicate by id in case of cross-instance reposts
+  const seen = new Set<string>()
+  const deduped = allEvents.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true })
+  // Sort by timestamp descending
+  deduped.sort((a, b) => (b.timestamp > a.timestamp ? 1 : -1))
+
+  const geolocated = deduped.filter(e => e.lat !== null)
+
+  return c.json({
+    events: deduped.slice(0, 80),
+    total: deduped.length,
+    geolocated: geolocated.length,
+    feeds: MASTODON_FEEDS.length,
+    source: 'mastodon-public',
+    note: 'Mastodon public hashtag timelines. No authentication required. Locations are inferred from post text and marked as low-confidence.',
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // FUSION — Threat zones
 // ═══════════════════════════════════════════════════════════════════════════════
 const FUSION_ZONES = [
@@ -740,16 +940,48 @@ app.get('/api/fusion/zones', (c) => c.json({ zones: FUSION_ZONES }))
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // FUSION — Viewport-aware zone query
+// Accepts optional `since` query param (ISO date string) to filter zones whose
+// base_threat was last "updated" after that timestamp. Since FUSION_ZONES are
+// static, the since filter is applied to a synthetic updated_at field derived
+// from the server start time for forward-compatibility with dynamic data.
 // ═══════════════════════════════════════════════════════════════════════════════
+const SERVER_START = new Date().toISOString()
+
 app.get('/api/fusion/viewport', (c) => {
   const latMin = parseFloat(c.req.query('latMin') || '-90')
   const latMax = parseFloat(c.req.query('latMax') || '90')
   const lonMin = parseFloat(c.req.query('lonMin') || '-180')
   const lonMax = parseFloat(c.req.query('lonMax') || '180')
-  const visible = FUSION_ZONES.filter(z =>
+  const since = c.req.query('since') || null   // ISO date — optional time-range filter
+
+  let visible = FUSION_ZONES.filter(z =>
     z.lat >= latMin && z.lat <= latMax && z.lon >= lonMin && z.lon <= lonMax
   )
-  return c.json({ zones: visible, total: FUSION_ZONES.length, visible: visible.length })
+
+  // Apply since filter — for curated static zones we treat their effective
+  // "observed_at" as the server start time. Dynamic data pipelines should
+  // attach their own timestamps.
+  if (since) {
+    try {
+      const sinceDate = new Date(since)
+      if (!isNaN(sinceDate.getTime())) {
+        const serverStartDate = new Date(SERVER_START)
+        // If since is after server start the static zones have no "new" data
+        if (sinceDate > serverStartDate) {
+          visible = []
+        }
+        // Otherwise all visible zones qualify (they were "loaded" at server start)
+      }
+    } catch { /* ignore invalid since param */ }
+  }
+
+  return c.json({
+    zones: visible,
+    total: FUSION_ZONES.length,
+    visible: visible.length,
+    since: since || null,
+    server_start: SERVER_START,
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -770,6 +1002,7 @@ app.get('/api/status', (c) => {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HTML SHELL — served at /
+// Loads all dependencies sequentially before initialising /static/sentinel.js
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/', (c) => {
   return c.html(`<!DOCTYPE html>
@@ -777,56 +1010,135 @@ app.get('/', (c) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta name="theme-color" content="#0a0e1a">
+<meta name="description" content="SENTINEL OS v${VERSION} — Global Multi-Domain Situational Awareness Platform">
+<meta name="application-name" content="SENTINEL OS">
+<meta property="og:title" content="SENTINEL OS v${VERSION}">
+<meta property="og:description" content="Global Multi-Domain Situational Awareness Platform — Aviation · Maritime · Cyber · Conflict · GNSS">
+<meta property="og:type" content="website">
 <title>SENTINEL OS v${VERSION}</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F6F0;</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Orbitron:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- Map base styles -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+<!-- noUiSlider — time scrub control -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.2/nouislider.min.css"/>
+<!-- Application stylesheet -->
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <div id="map"></div>
 <div id="hud"></div>
 <div id="inspector"></div>
+<!-- Loading screen -->
 <div id="loading">
   <div class="load-inner">
     <div class="load-spinner"></div>
-    <div class="load-text">SENTINEL OS v${VERSION}</div>
-    <div class="load-sub" id="load-status">Loading dependencies...</div>
+    <div class="load-logo">&#x1F6F0;</div>
+    <div class="load-text">SENTINEL OS</div>
+    <div class="load-version">v${VERSION}</div>
+    <div class="load-sub" id="load-status">Initialising...</div>
+    <div class="load-bar-wrap"><div class="load-bar" id="load-bar"></div></div>
   </div>
 </div>
 <script>
-// Dependency loader — map only initializes after Leaflet is confirmed ready
+// ── Dependency loader ──────────────────────────────────────────────────────────
+// Loads all JS dependencies sequentially, then bootstraps /static/sentinel.js.
+// Dependencies marked optional:true are silently skipped on failure.
 (function(){
+  'use strict';
+  var SENTINEL_VERSION = '${VERSION}';
+
   var deps = [
-    {src:'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', check:function(){return window.L}},
-    {src:'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js', check:function(){return window.L&&L.MarkerClusterGroup}},
-    {src:'https://unpkg.com/satellite.js@5.0.0/dist/satellite.min.js', check:function(){return window.satellite}, optional:true},
+    {
+      src: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+      check: function(){ return typeof window.L !== 'undefined'; },
+      label: 'Leaflet 1.9.4',
+      optional: false
+    },
+    {
+      src: 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js',
+      check: function(){ return window.L && typeof L.MarkerClusterGroup !== 'undefined'; },
+      label: 'MarkerCluster 1.5.3',
+      optional: false
+    },
+    {
+      src: 'https://unpkg.com/satellite.js@5.0.0/dist/satellite.min.js',
+      check: function(){ return typeof window.satellite !== 'undefined'; },
+      label: 'satellite.js 5.0',
+      optional: true
+    },
+    {
+      src: 'https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.2/nouislider.min.js',
+      check: function(){ return typeof window.noUiSlider !== 'undefined'; },
+      label: 'noUiSlider 15.7.2',
+      optional: true
+    },
   ];
-  var loaded=0;
-  function setStatus(msg){var el=document.getElementById('load-status');if(el)el.textContent=msg;}
-  function loadNext(){
-    if(loaded>=deps.length){setStatus('Initializing...');loadApp();return}
-    var dep=deps[loaded];
-    setStatus('Loading '+(loaded+1)+'/'+deps.length+'...');
-    var s=document.createElement('script');
-    s.src=dep.src;
-    s.onload=function(){loaded++;loadNext()};
-    s.onerror=function(){
-      if(dep.optional){console.warn('Optional dep failed:',dep.src);loaded++;loadNext()}
-      else{setStatus('Failed to load critical dependency');console.error('Failed:',dep.src)}
+
+  var loaded = 0;
+  var total = deps.length;
+
+  function setStatus(msg) {
+    var el = document.getElementById('load-status');
+    if (el) el.textContent = msg;
+  }
+
+  function setProgress(pct) {
+    var bar = document.getElementById('load-bar');
+    if (bar) bar.style.width = Math.min(100, pct) + '%';
+  }
+
+  function loadNext() {
+    setProgress(Math.round((loaded / (total + 1)) * 100));
+    if (loaded >= total) {
+      setStatus('Launching SENTINEL OS v' + SENTINEL_VERSION + '...');
+      setProgress(95);
+      loadApp();
+      return;
+    }
+    var dep = deps[loaded];
+    setStatus('Loading ' + dep.label + ' (' + (loaded + 1) + '/' + total + ')...');
+
+    // Skip if already present (e.g. cached inline)
+    if (dep.check()) { loaded++; loadNext(); return; }
+
+    var s = document.createElement('script');
+    s.src = dep.src;
+    s.onload = function() { loaded++; loadNext(); };
+    s.onerror = function() {
+      if (dep.optional) {
+        console.warn('[SENTINEL] Optional dependency failed (skipped):', dep.label, dep.src);
+        loaded++;
+        loadNext();
+      } else {
+        setStatus('\u26A0 Failed to load ' + dep.label + '. Check network and reload.');
+        console.error('[SENTINEL] Critical dependency failed:', dep.label, dep.src);
+      }
     };
     document.head.appendChild(s);
   }
-  function loadApp(){
-    var s=document.createElement('script');s.src='/static/sentinel.js';
-    s.onerror=function(){setStatus('Failed to load application')};
+
+  function loadApp() {
+    var s = document.createElement('script');
+    s.src = '/static/sentinel.js?v=' + SENTINEL_VERSION;
+    s.onload = function() { setProgress(100); };
+    s.onerror = function() {
+      setStatus('\u26A0 Failed to load application (sentinel.js). Check /static/sentinel.js exists.');
+      console.error('[SENTINEL] Application script failed to load.');
+    };
     document.head.appendChild(s);
   }
-  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',loadNext)}
-  else{loadNext()}
+
+  // Kick off after DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', loadNext);
+  } else {
+    loadNext();
+  }
 })();
 <\/script>
 </body>

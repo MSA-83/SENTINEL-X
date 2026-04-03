@@ -29,3 +29,4 @@ Thumbs.db
 
 # Uploaded files (dev artifacts)
 upload_files/
+.playwright-cli/
