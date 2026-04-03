@@ -240,10 +240,10 @@ const TARGETS: Record<string, TargetConfig> = {
   n2yo: { url: (key: string) => `https://api.n2yo.com/rest/v1/satellite/above/0/0/0/80/0?apiKey=${key}`, secret: 'N2YO_KEY', timeout: 10000 },
   gdacs: { url: 'https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?eventlist=EQ,TC,FL,VO,TS&alertlevel=Green;Orange;Red', timeout: 16000 },
   reliefweb: { url: 'https://api.reliefweb.int/v1/disasters?appname=sentinel-os-osint&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date', timeout: 14000 },
-  gdelt_conflict: { url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=military+attack+airstrike+bombing+conflict&mode=artlist&maxrecords=50&format=json&timespan=48h&sourcelang=english', timeout: 10000 },
-  gdelt_maritime: { url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=navy+warship+maritime+vessel+blockade&mode=artlist&maxrecords=30&format=json&timespan=48h&sourcelang=english', timeout: 10000 },
-  gdelt_nuclear: { url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=nuclear+missile+ICBM+warhead+enrichment&mode=artlist&maxrecords=25&format=json&timespan=72h&sourcelang=english', timeout: 10000 },
-  gdelt_cyber: { url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=cyberattack+ransomware+hacking+breach+APT&mode=artlist&maxrecords=25&format=json&timespan=48h&sourcelang=english', timeout: 10000 },
+  gdelt_conflict: { timeout: 30000, url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=military+attack+airstrike+bombing+conflict&mode=artlist&maxrecords=50&format=json&timespan=48h&sourcelang=english' },
+  gdelt_maritime: { timeout: 30000, url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=navy+warship+maritime+vessel+blockade&mode=artlist&maxrecords=30&format=json&timespan=48h&sourcelang=english' },
+  gdelt_nuclear: { timeout: 30000, url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=nuclear+missile+ICBM+warhead+enrichment&mode=artlist&maxrecords=25&format=json&timespan=72h&sourcelang=english' },
+  gdelt_cyber: { timeout: 30000, url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=cyberattack+ransomware+hacking+breach+APT&mode=artlist&maxrecords=25&format=json&timespan=48h&sourcelang=english' },
 }
 
 app.post('/api/proxy', async (c) => {
@@ -429,49 +429,61 @@ app.get('/api/acled/events', async (c) => {
 // GDELT CONFLICT INTEL — Article-based geocoding
 // Free, no key: https://api.gdeltproject.org/
 // ═══════════════════════════════════════════════════════════════════════════════
-async function fetchGDELT(url: string): Promise<any> {
-  for (let i = 0; i < 2; i++) {
-    try {
-      if (i > 0) await new Promise(r => setTimeout(r, 2000))
-      const res = await safeFetch(url, {}, 8000)
-      if (res.status === 429) continue
-      if (!res.ok) return null
-      const text = await res.text()
-      try { return JSON.parse(text) } catch { return null }
-    } catch { /* retry */ }
-  }
+async function fetchGDELT(url: string, timeoutMs = 30000): Promise<any> {
+  try {
+  const res = await safeFetch(url, {}, timeoutMs)
+  if (res.status === 429) return null
+  if (!res.ok) return null
+  const text = await res.text()
+  try { return JSON.parse(text) } catch { return null }
+  } catch { return null }
   return null
 }
 
 app.post('/api/intel/gdelt', async (c) => {
   const { category } = await c.req.json<{ category?: string }>().catch(() => ({ category: 'conflict' }))
-  const key = category === 'maritime' ? 'gdelt_maritime' : category === 'nuclear' ? 'gdelt_nuclear' : category === 'cyber' ? 'gdelt_cyber' : 'gdelt_conflict'
-  const config = TARGETS[key]
+  const catKey = category === 'maritime' ? 'gdelt_maritime' : category === 'nuclear' ? 'gdelt_nuclear' : category === 'cyber' ? 'gdelt_cyber' : 'gdelt_conflict'
+  const config = TARGETS[catKey]
   if (!config || typeof config.url !== 'string') return c.json(upstreamError('gdelt', 400, 'Invalid category'))
-
-  try {
-    const data = await fetchGDELT(config.url)
-    if (!data) return c.json({ events: [], _upstream_error: true, message: 'GDELT unavailable or rate-limited' })
-    const articles = data.articles || []
-    const events: CanonicalEvent[] = articles.map((art: any, i: number) => {
+  const cat = category || 'conflict'
+  const entityType = cat === 'cyber' ? 'cyber_intel' : cat === 'nuclear' ? 'nuclear_intel' : 'conflict_intel'
+  // Build NewsAPI query as fast fallback (key-gated, ~1s response)
+  const newsKey = c.env.NEWS_API_KEY
+  const newsQ = cat === 'cyber' ? 'cyberattack+ransomware+hacking+breach' : cat === 'nuclear' ? 'nuclear+missile+warhead+uranium' : cat === 'maritime' ? 'warship+navy+maritime+vessel' : 'military+attack+conflict+airstrike'
+  const fromDate = new Date(Date.now() - 3 * 86400000).toISOString().split('T')[0]
+  const newsUrl = newsKey ? ('https://newsapi.org/v2/everything?q=' + newsQ + '&sortBy=publishedAt&pageSize=40&language=en&from=' + fromDate + '&apiKey=' + newsKey) : ''
+  function geocodeArticles(articles: any[], sourceLabel: string, prefix: string): CanonicalEvent[] {
+    return articles.map((art: any, i: number) => {
       const geo = geocodeFromText(art.title || '')
       if (!geo) return null
       return evt({
-        id: `gdelt_${category}_${i}`, entity_type: category === 'cyber' ? 'cyber_intel' : category === 'nuclear' ? 'nuclear_intel' : 'conflict_intel',
-        source: 'GDELT 2.0', source_url: art.url || '', title: art.title || '',
-        description: `${art.domain || ''} — ${art.sourcecountry || ''}`,
+        id: prefix + '_' + cat + '_' + i, entity_type: entityType,
+        source: sourceLabel, source_url: art.url || '', title: art.title || '',
+        description: (art.domain || art.source?.name || '') + (art.sourcecountry ? ' \u2014 ' + art.sourcecountry : ''),
         lat: geo.lat, lon: geo.lon, region: geo.region,
-        timestamp: art.seendate || new Date().toISOString(), confidence: geo.confidence,
-        severity: 'medium', tags: [category || 'conflict', geo.matched],
+        timestamp: art.seendate || art.publishedAt || new Date().toISOString(),
+        confidence: geo.confidence, severity: 'medium', tags: [cat, geo.matched],
         provenance: 'geocoded-inferred',
-        metadata: { domain: art.domain, language: art.language, matched_location: geo.matched }
+        metadata: { domain: art.domain || art.source?.name, matched_location: geo.matched }
       })
     }).filter(Boolean) as CanonicalEvent[]
-    return c.json({ events, total: articles.length, geocoded: events.length, source: 'gdelt' })
-  } catch (error) { return c.json(upstreamError('gdelt', 0, String(error))) }
+  }
+  // Run GDELT and NewsAPI in parallel -- return first that succeeds with geocodeable articles
+  const gdeltP = fetchGDELT(config.url)
+  const newsP: Promise<any> = newsUrl ? safeJson(newsUrl, {}, 10000) : Promise.reject('no-key')
+  const [gdeltR, newsR] = await Promise.allSettled([gdeltP, newsP])
+  if (gdeltR.status === 'fulfilled' && gdeltR.value?.articles?.length) {
+    const events = geocodeArticles(gdeltR.value.articles, 'GDELT 2.0', 'gdelt')
+    return c.json({ events, total: gdeltR.value.articles.length, geocoded: events.length, source: 'gdelt' })
+  }
+  if (newsR.status === 'fulfilled' && newsR.value?.articles?.length) {
+    const events = geocodeArticles(newsR.value.articles, 'NewsAPI (conflict intel)', 'news')
+    return c.json({ events, total: newsR.value.articles.length, geocoded: events.length, source: 'newsapi-conflict-fallback' })
+  }
+  return c.json({ events: [], _upstream_error: true, message: 'GDELT unavailable' + (newsKey ? ' and NewsAPI returned no geocodeable articles' : '. Configure NEWS_API_KEY for fallback.') })
 })
 
-// ═══════════════════════════════════════════════════════════════════════════════
+
 // NEWS INTEL — supplemental to GDELT
 // Requires: NEWS_API_KEY (free at https://newsapi.org/register)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1084,18 +1096,21 @@ app.get('/api/air/traffic', async (c) => {
   } catch (error) { return c.json(upstreamError('opensky', 0, String(error))) }
 })
 
-// SEA domain
+// SEA domain -- GFW fishing/dark vessels. Maritime intel via /api/intel/gdelt?category=maritime
 app.get('/api/sea/vessels', async (c) => {
   const token = c.env.GFW_TOKEN
+  const vessels: CanonicalEvent[] = []
   if (token) {
     try {
       const hdrs = { Authorization: 'Bearer ' + token }
-      const u1 = 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-fishing-events:latest&limit=50'
-      const u2 = 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-gaps-events:latest&limit=30'
-      const [fishR, gapR] = await Promise.allSettled([safeJson(u1,{headers:hdrs},12000), safeJson(u2,{headers:hdrs},12000)])
-      const vessels: CanonicalEvent[] = []
+      const u1 = 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-fishing-events:latest&limit=50&offset=0'
+      const u2 = 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-gaps-events:latest&limit=30&offset=0'
+      const [fishR, gapR] = await Promise.allSettled([
+        safeJson(u1, { headers: hdrs }, 14000),
+        safeJson(u2, { headers: hdrs }, 14000),
+      ])
       const addV = (raw: any, type: string, prefix: string) => {
-        const entries = Array.isArray(raw) ? raw : (raw?.entries || [])
+        const entries: any[] = Array.isArray(raw) ? raw : (raw?.entries || [])
         entries.slice(0, 40).forEach((ev: any, i: number) => {
           const lat = ev.position?.lat, lon = ev.position?.lon
           if (lat == null || lon == null) return
@@ -1103,36 +1118,24 @@ app.get('/api/sea/vessels', async (c) => {
           vessels.push(evt({
             id: prefix + i, entity_type: type,
             source: 'Global Fishing Watch', source_url: 'https://globalfishingwatch.org/',
-            title: (type === 'dark_vessel' ? 'DARK ' : '') + name, lat, lon,
+            title: (type === 'dark_vessel' ? 'DARK \u2014 ' : '') + name, lat, lon,
             confidence: 80, severity: type === 'dark_vessel' ? 'medium' : 'low',
             tags: [type === 'dark_vessel' ? 'ais-gap' : 'fishing'],
             metadata: { mmsi: v.ssvid, flag: v.flag, gap_hours: ev.gap_hours }
           }))
         })
       }
-      if (fishR.status === 'fulfilled') addV(fishR.value, 'fishing_vessel', 'gfw_fish_')
-      if (gapR.status === 'fulfilled') addV(gapR.value, 'dark_vessel', 'gfw_gap_')
-      if (vessels.length > 0) return c.json({ events: vessels, count: vessels.length, source: 'gfw' })
-    } catch { /* fall through */ }
+      if (fishR.status === 'fulfilled' && fishR.value && !fishR.value._upstream_error) addV(fishR.value, 'fishing_vessel', 'gfw_fish_')
+      if (gapR.status === 'fulfilled' && gapR.value && !gapR.value._upstream_error) addV(gapR.value, 'dark_vessel', 'gfw_gap_')
+    } catch { /* GFW unavailable */ }
   }
-  try {
-    const mUrl = 'https://api.gdeltproject.org/api/v2/doc/doc?query=navy+warship+maritime+vessel+shipping&mode=artlist&maxrecords=25&format=json&timespan=48h&sourcelang=english'
-    const data = await fetchGDELT(mUrl)
-    if (data?.articles) {
-      const events = (data.articles as any[]).slice(0, 20).map((art: any, i: number) => {
-        const geo = geocodeFromText(art.title || '')
-        if (!geo) return null
-        return evt({ id: 'maritime_' + i, entity_type: 'ship', source: 'GDELT Maritime',
-          source_url: art.url || '', title: art.title || '',
-          lat: geo.lat, lon: geo.lon, region: geo.region, timestamp: art.seendate || '',
-          confidence: geo.confidence, severity: 'info', tags: ['maritime', geo.matched],
-          provenance: 'geocoded-inferred', metadata: { domain: art.domain } })
-      }).filter(Boolean) as CanonicalEvent[]
-      return c.json({ events, count: events.length, source: 'gdelt-maritime', note: 'Configure GFW_TOKEN for live AIS.' })
-    }
-  } catch { /* ignore */ }
-  return c.json({ events: [], count: 0, source: 'sea', note: 'GFW_TOKEN required for live AIS data.' })
+  if (vessels.length > 0) return c.json({ events: vessels, count: vessels.length, source: 'gfw' })
+  return c.json({
+    events: [], count: 0, source: 'sea',
+    note: token ? 'GFW returned no vessel data. For maritime intel use /api/intel/gdelt with category:maritime' : 'Configure GFW_TOKEN for live AIS. Free maritime intel at /api/intel/gdelt?category=maritime',
+  })
 })
+
 
 // SPACE domain
 app.get('/api/space/satellites', async (c) => {
