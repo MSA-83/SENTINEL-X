@@ -778,7 +778,7 @@ app.get('/api/health', (c) => c.json({
 }))
 
 app.get('/api/status', (c) => {
-  const keyNames: (keyof Bindings)[] = ['NASA_FIRMS_KEY', 'OWM_KEY', 'N2YO_KEY', 'GFW_TOKEN', 'AVWX_KEY', 'RAPIDAPI_KEY', 'SHODAN_KEY', 'NEWS_API_KEY', 'AISSTREAM_KEY', 'OTX_KEY', 'ACLED_KEY', 'ACLED_EMAIL']
+  const keyNames: (keyof Bindings)[] = ['NASA_FIRMS_KEY', 'OWM_KEY', 'N2YO_KEY', 'GFW_TOKEN', 'AVWX_KEY', 'RAPIDAPI_KEY', 'SHODAN_KEY', 'NEWS_API_KEY', 'AISSTREAM_KEY', 'OTX_KEY', 'ACLED_KEY', 'ACLED_EMAIL', 'ABUSECH_KEY', 'SPACETRACK_USER', 'SPACETRACK_PASS', 'CESIUM_TOKEN', 'COPERNICUS_CLIENT_ID', 'PLANET_API_KEY']
   const keys: Record<string, boolean> = {}
   for (const k of keyNames) keys[k] = !!(c.env[k])
   return c.json({ keys, targets: Object.keys(TARGETS).length, fusion_zones: FUSION_ZONES.length, gnss_zones: GNSS_ZONES.length, geocoding_entries: Object.keys(GEO_DB).length })
@@ -1062,6 +1062,109 @@ app.get('/api/fusion/global', async (c) => {
       RAPIDAPI_KEY: Boolean(c.env.RAPIDAPI_KEY), AISSTREAM_KEY: Boolean(c.env.AISSTREAM_KEY),
     },
   })
+})
+
+// SPACE-TRACK.ORG — authenticated satellite catalog
+app.get('/api/space/spacetrack', async (c) => {
+  const user = c.env.SPACETRACK_USER, pass = c.env.SPACETRACK_PASS
+  if (!user || !pass) return c.json(upstreamError('spacetrack', 0, 'Configure SPACETRACK_USER and SPACETRACK_PASS'))
+  try {
+    const creds = 'identity=' + encodeURIComponent(user) + '&password=' + encodeURIComponent(pass)
+    const login = await safeFetch('https://www.space-track.org/ajaxauth/login',
+      { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: creds }, 15000)
+    if (!login.ok) return c.json(upstreamError('spacetrack', login.status, 'Login failed'))
+    const cookie = login.headers.get('set-cookie') || ''
+    const q = 'https://www.space-track.org/basicspacedata/query/class/gp/EPOCH/>now-1/orderby/NORAD_CAT_ID/limit/200/format/json'
+    const dr = await safeFetch(q, { headers: { Cookie: cookie } }, 20000)
+    if (!dr.ok) return c.json(upstreamError('spacetrack', dr.status, 'Data fetch failed'))
+    const sats = await dr.json() as any[]
+    const events: CanonicalEvent[] = sats.slice(0, 150).map((s: any, i: number) => evt({
+      id: 'st_' + i, entity_type: 'satellite',
+      source: 'Space-Track.org', source_url: 'https://www.space-track.org/',
+      title: (s.OBJECT_NAME || 'NORAD:' + s.NORAD_CAT_ID).trim(), lat: null, lon: null,
+      confidence: 98, severity: 'info', tags: ['satellite', 'tle'],
+      metadata: { norad_id: s.NORAD_CAT_ID, object_type: s.OBJECT_TYPE, epoch: s.EPOCH,
+        inclination: s.INCLINATION, eccentricity: s.ECCENTRICITY, country: s.COUNTRY_CODE }
+    }))
+    return c.json({ events, count: events.length, total: sats.length, source: 'space-track' })
+  } catch (error) { return c.json(upstreamError('spacetrack', 0, String(error))) }
+})
+
+// URLhaus authenticated (ABUSECH_KEY unlocks higher limits)
+app.get('/api/cyber/urlhaus-auth', async (c) => {
+  const key = c.env.ABUSECH_KEY
+  const hdrs: Record<string,string> = { 'Content-Type': 'application/x-www-form-urlencoded' }
+  if (key) hdrs['Auth-Key'] = key
+  try {
+    const res = await safeFetch('https://urlhaus-api.abuse.ch/v1/urls/recent/limit/100/',
+      { method: 'POST', headers: hdrs }, 12000)
+    if (res.ok) {
+      const data = await res.json() as any
+      const urls = data.urls || []
+      if (urls.length > 0) {
+        const events: CanonicalEvent[] = urls.map((u: any, i: number) => evt({
+          id: 'urlhaus_a_' + i, entity_type: 'cyber_malware_url',
+          source: 'URLhaus (abuse.ch)', source_url: u.urlhaus_reference || 'https://urlhaus.abuse.ch/',
+          title: 'Malware URL: ' + (u.url || '').slice(0, 80),
+          description: 'Threat: ' + (u.threat || 'unknown') + ' | ' + (u.url_status || 'unknown'),
+          timestamp: u.dateadded || '', confidence: key ? 90 : 80,
+          severity: u.url_status === 'online' ? 'high' : 'medium',
+          tags: [...(u.tags || []), u.threat || ''].filter(Boolean),
+          metadata: { url: u.url, host: u.host, url_status: u.url_status, threat: u.threat }
+        }))
+        return c.json({ events, count: events.length, authenticated: Boolean(key), source: 'urlhaus-auth' })
+      }
+    }
+    return c.json(upstreamError('urlhaus-auth', 0, 'No data'))
+  } catch (error) { return c.json(upstreamError('urlhaus-auth', 0, String(error))) }
+})
+
+// ThreatFox authenticated (ABUSECH_KEY unlocks 7-day IOC feed)
+app.get('/api/cyber/threatfox-auth', async (c) => {
+  const key = c.env.ABUSECH_KEY
+  const hdrs: Record<string,string> = { 'Content-Type': 'application/json' }
+  if (key) hdrs['Auth-Key'] = key
+  try {
+    const res = await safeFetch('https://threatfox-api.abuse.ch/api/v1/',
+      { method: 'POST', headers: hdrs, body: JSON.stringify({ query: 'get_iocs', days: 7 }) }, 12000)
+    if (res.ok) {
+      const data = await res.json() as any
+      const iocs = Array.isArray(data.data) ? data.data.slice(0, 100) : []
+      const events: CanonicalEvent[] = iocs.map((ioc: any, i: number) => evt({
+        id: 'tfauth_' + (ioc.id || i), entity_type: 'cyber_ioc',
+        source: 'ThreatFox (abuse.ch)',
+        source_url: 'https://threatfox.abuse.ch/ioc/' + ioc.id + '/',
+        title: 'IOC: ' + (ioc.ioc_value || 'Unknown'),
+        description: (ioc.malware || '') + ' - ' + (ioc.threat_type || ''),
+        timestamp: ioc.first_seen_utc || '', confidence: ioc.confidence_level || 75,
+        severity: (ioc.threat_type || '').includes('botnet') ? 'high' : 'medium',
+        tags: (ioc.tags || []).concat([ioc.malware || '', ioc.threat_type || '']).filter(Boolean),
+        metadata: { ioc_type: ioc.ioc_type, ioc_value: ioc.ioc_value,
+          malware: ioc.malware, threat_type: ioc.threat_type, reporter: ioc.reporter }
+      }))
+      return c.json({ events, count: events.length, authenticated: Boolean(key), source: 'threatfox-auth' })
+    }
+    return c.json(upstreamError('threatfox-auth', 0, 'API error'))
+  } catch (error) { return c.json(upstreamError('threatfox-auth', 0, String(error))) }
+})
+
+// Copernicus Dataspace OAuth2 token (for frontend WMTS/WMS use)
+app.get('/api/imagery/copernicus-token', async (c) => {
+  const cid = c.env.COPERNICUS_CLIENT_ID
+  const csec = c.env.COPERNICUS_CLIENT_SECRET
+  if (!cid || !csec) return c.json({ available: false, note: 'Copernicus credentials not configured' })
+  try {
+    const body = 'grant_type=client_credentials&client_id=' + encodeURIComponent(cid)
+      + '&client_secret=' + encodeURIComponent(csec)
+    const res = await safeFetch(
+      'https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token',
+      { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body }, 12000)
+    if (!res.ok) return c.json({ available: false, error: 'Auth failed HTTP ' + res.status })
+    const data = await res.json() as any
+    return c.json({ available: true, access_token: data.access_token,
+      expires_in: data.expires_in, token_type: data.token_type,
+      wmts_base: 'https://sh.dataspace.copernicus.eu/wmts/1.0.0' })
+  } catch (error) { return c.json({ available: false, error: String(error) }) }
 })
 
 export default app
