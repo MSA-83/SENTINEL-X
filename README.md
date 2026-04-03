@@ -1,4 +1,4 @@
-# SENTINEL OS v6.1
+# SENTINEL OS v6.2
 
 ## Global Multi-Domain Situational Awareness Platform
 
@@ -231,6 +231,7 @@ npx wrangler pages secret put OWM_KEY --project-name sentinel-os
 | Z | Toggle threat zones |
 | R | Refresh all feeds |
 | / or F | Focus search |
+| T | Toggle replay timeline scrubber |
 | Escape | Close panel / search |
 
 ## Project Structure
@@ -282,6 +283,16 @@ sentinel-os/
 | AlienVault OTX | https://otx.alienvault.com/ | Free key | Threat intelligence |
 
 ## Changelog
+
+### v6.2.0 (current)
+- Fixed duplicate ACLED_KEY binding (was TypeScript error)
+- Added raw_payload_hash to CanonicalEvent schema (FNV-1a hash for deduplication)
+- Added hashPayload() function wired into all evt() calls
+- Added timeline/replay scrubber: time bar, play/pause, seek, speed control (x1..x8)
+- Time window cycling: 1H, 6H, 12H, 24H, 48H windows
+- Map entity filtering by timeline cursor timestamp
+- Event density histogram overlay in scrubber track
+- T keyboard shortcut to toggle timeline mode
 
 ### v6.1.0 (2026-04-02)
 - Production-grade rewrite: canonical event schema, provenance tracking, confidence metadata

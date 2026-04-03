@@ -98,6 +98,8 @@
   let showZones = true
   let cycle = 0
   let timeline = []            // log entries
+  // ── TIMELINE ──
+  let tlEnabled = false, tlCursor = Date.now(), tlWindow = 86400000, tlPlaying = false, tlSpeed = 1, tlPlayTimer = null
   const zoneCircles = []
   const zoneLabels = []
 
@@ -424,7 +426,7 @@
     Object.values(layerGroups).forEach(g => g.clearLayers())
 
     // Add entities to appropriate layer groups
-    entities.forEach(e => {
+    tlVisibleEntities().forEach(e => {
       if (e.lat == null || e.lon == null) return
       const layerKey = typeToLayer(e.entity_type)
       const cfg = LAYERS[layerKey]
@@ -956,6 +958,8 @@
     }
 
     // ── STATS RING ──
+    // ── TIMELINE SCRUBBER ──
+    h += renderTimeline()
     h += '<div class="stats-ring">'
     const statItems = [
       ['AIR', (counts.aircraft || 0) + (counts.military || 0), '#00ccff'],
@@ -986,6 +990,88 @@
     const loadEl = document.getElementById('loading')
     if (loadEl) loadEl.style.display = 'none'
   }
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIMELINE / REPLAY ENGINE
+  // ═══════════════════════════════════════════════════════════════════════════
+  function tlWindowStart() { return tlEnabled ? tlCursor - tlWindow : 0 }
+  function tlVisibleEntities() {
+    if (!tlEnabled) return entities
+    var cutoff = tlCursor
+    return entities.filter(function(e) {
+      if (!e.timestamp) return true
+      var t = new Date(e.timestamp).getTime()
+      return !isNaN(t) && t <= cutoff
+    })
+  }
+  function tlPlay() {
+    if (tlPlayTimer) clearInterval(tlPlayTimer)
+    tlPlaying = true
+    tlPlayTimer = setInterval(function() {
+      tlCursor += 300000 * tlSpeed
+      if (tlCursor >= Date.now()) { tlCursor = Date.now(); tlPause() }
+      refreshMap(); renderUI()
+    }, 400)
+  }
+  function tlPause() {
+    if (tlPlayTimer) { clearInterval(tlPlayTimer); tlPlayTimer = null }
+    tlPlaying = false
+  }
+  function tlReset() { tlPause(); tlCursor = Date.now() - tlWindow; refreshMap(); renderUI() }
+  function tlJumpNow() { tlPause(); tlCursor = Date.now(); refreshMap(); renderUI() }
+  function tlToggle() { tlEnabled = !tlEnabled; if (!tlEnabled) { tlPause(); refreshMap() } renderUI() }
+  function tlCycleSpeed() { tlSpeed = tlSpeed >= 8 ? 1 : tlSpeed * 2; renderUI() }
+  function tlCycleWindow() {
+    var wins = [3600000, 21600000, 43200000, 86400000, 172800000]
+    var i = wins.indexOf(tlWindow); tlWindow = wins[(i + 1) % wins.length]
+    tlReset()
+  }
+  function tlSeek(ev) {
+    var rect = ev.currentTarget.getBoundingClientRect()
+    var pct = (ev.clientX - rect.left) / rect.width
+    tlCursor = Math.round(tlWindowStart() + pct * tlWindow)
+    refreshMap(); renderUI()
+  }
+  function tlWinLabel() {
+    return tlWindow === 3600000 ? '1H' : tlWindow === 21600000 ? '6H' : tlWindow === 43200000 ? '12H' : tlWindow === 86400000 ? '24H' : '48H'
+  }
+  function renderTimeline() {
+    if (!tlEnabled) {
+      return '<div class="tl-toggle" onclick="S._tlToggle()" title="Open replay timeline">&#128342; REPLAY</div>'
+    }
+    var h = ''
+    var now = Date.now(), start = tlWindowStart(), range = tlWindow
+    var pct = Math.max(0, Math.min(100, (tlCursor - start) / range * 100))
+    function fmtT(ms) { var d = new Date(ms); return String(d.getUTCHours()).padStart(2,'0') + ':' + String(d.getUTCMinutes()).padStart(2,'0') + 'Z' }
+    function fmtD(ms) { return new Date(ms).toISOString().slice(0, 10) }
+    var buckets = new Array(60).fill(0)
+    entities.forEach(function(e) {
+      if (!e.timestamp) return
+      var t = new Date(e.timestamp).getTime()
+      if (isNaN(t)) return
+      var i = Math.floor((t - start) / range * 60)
+      if (i >= 0 && i < 60) buckets[i]++
+    })
+    var mx = Math.max(1, Math.max.apply(null, buckets))
+    h += '<div class="tl-bar">'
+    h += '<div class="tl-ctrl">'
+    h += '<span class="tl-lbl" onclick="S._tlToggle()">&#128342; REPLAY</span>'
+    h += '<span class="tl-btn" onclick="S._tlReset()">|&#9664;</span>'
+    h += '<span class="tl-btn' + (tlPlaying ? ' active' : '') + '" onclick="S._tlPlayPause()">' + (tlPlaying ? '&#9646;&#9646;' : '&#9654;') + '</span>'
+    h += '<span class="tl-btn" onclick="S._tlNow()">NOW</span>'
+    h += '<span class="tl-spd" onclick="S._tlCycleSpeed()">x' + tlSpeed + '</span>'
+    h += '<span class="tl-win" onclick="S._tlCycleWindow()">' + tlWinLabel() + '</span>'
+    h += '</div>'
+    h += '<div class="tl-track" onclick="S._tlSeek(event)">'
+    h += '<div class="tl-hist">'
+    buckets.forEach(function(b) { var hp = Math.round(b / mx * 100); h += '<div class="tl-hbar" style="height:' + hp + '%"></div>' })
+    h += '</div>'
+    h += '<div class="tl-cursor" style="left:' + pct.toFixed(2) + '%"></div>'
+    h += '</div>'
+    h += '<div class="tl-labels"><span>' + fmtD(start) + ' ' + fmtT(start) + '</span><span class="tl-now">' + fmtD(tlCursor) + ' ' + fmtT(tlCursor) + '</span><span>' + fmtT(now) + '</span></div>'
+    h += '</div>'
+    return h
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════════
   // KEYBOARD
@@ -1001,6 +1087,7 @@
       else if (k === 'z') { toggleZones() }
       else if (k === 's') { showSatPanel = !showSatPanel; renderUI() }
       else if (k === 'r') { fetchAll() }
+      else if (k === 't') { tlToggle() }
       else if (k === '/' || k === 'f') { e.preventDefault(); const inp = document.querySelector('.search-input'); if (inp) inp.focus() }
     })
   }
@@ -1025,6 +1112,14 @@
     _satDateNext: () => { const d = new Date(satDate); d.setDate(d.getDate() + 1); changeSatDate(d.toISOString().split('T')[0]); renderUI() },
     _satDateChange: v => { changeSatDate(v); renderUI() },
     _satDateYesterday: () => { initSatDate(); if (activeSatLayer) applySatelliteLayer(activeSatLayer); renderUI() },
+    // Timeline scrubber handlers
+    _tlToggle: () => { tlToggle() },
+    _tlPlayPause: () => { tlPlaying ? tlPause() : tlPlay() },
+    _tlReset: () => { tlReset() },
+    _tlNow: () => { tlJumpNow() },
+    _tlCycleSpeed: () => { tlCycleSpeed() },
+    _tlCycleWindow: () => { tlCycleWindow() },
+    _tlSeek: ev => { tlSeek(ev) },
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1036,7 +1131,7 @@
     initMap()
     initKeyboard()
     renderUI()
-    log('SENTINEL OS v6.1 initialized', 'info')
+    log('SENTINEL OS v6.2 initialized', 'info')
     fetchAll()
     // CelesTrak TLE propagation (delayed — non-critical)
     setTimeout(fetchCelesTrak, 3000)

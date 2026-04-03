@@ -27,7 +27,6 @@ type Bindings = {
   NEWS_API_KEY?: string
   AISSTREAM_KEY?: string
   OTX_KEY?: string
-  ACLED_KEY?: string
   ACLED_EMAIL?: string
 }
 
@@ -62,7 +61,16 @@ interface CanonicalEvent {
   tags: string[]
   correlations: string[]
   metadata: Record<string, unknown>
+  raw_payload_hash: string
   provenance: string          // e.g. "direct-api" | "geocoded-inferred" | "curated-reference"
+}
+
+/** FNV-1a 32-bit hash — deterministic deduplication key for canonical events. */
+function hashPayload(data: unknown): string {
+  const str = JSON.stringify(data) ?? ""
+  let h = 0x811c9dc5
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) }
+  return (h >>> 0).toString(16).padStart(8, "0")
 }
 
 function evt(partial: Partial<CanonicalEvent> & { id: string; entity_type: string; source: string; title: string }): CanonicalEvent {
@@ -79,6 +87,7 @@ function evt(partial: Partial<CanonicalEvent> & { id: string; entity_type: strin
     tags: [],
     correlations: [],
     metadata: {},
+    raw_payload_hash: hashPayload(partial),
     provenance: 'direct-api',
     ...partial,
   }
@@ -482,7 +491,8 @@ app.get('/api/cyber/cisa-kev', async (c) => {
       description: v.shortDescription || '',
       timestamp: v.dateAdded || '', severity: 'high', risk_score: 75,
       confidence: 95, tags: ['cisa-kev', 'known-exploited', v.vendorProject || '', v.product || ''].filter(Boolean),
-      provenance: 'direct-api',
+      raw_payload_hash: hashPayload(partial),
+    provenance: 'direct-api',
       metadata: { cve_id: v.cveID, vendor: v.vendorProject, product: v.product, required_action: v.requiredAction, due_date: v.dueDate, known_ransomware: v.knownRansomwareCampaignUse }
     }))
     return c.json({ events, count: events.length, catalog_date: data.catalogVersion, source: 'cisa-kev' })
@@ -583,7 +593,8 @@ app.get('/api/cyber/threatfox', async (c) => {
         timestamp: ioc.first_seen_utc || '', confidence: ioc.confidence_level || 70,
         severity: (ioc.threat_type || '').includes('botnet') ? 'high' : 'medium',
         tags: (ioc.tags || []).concat([ioc.malware || '', ioc.threat_type || '']).filter(Boolean),
-        provenance: 'direct-api',
+        raw_payload_hash: hashPayload(partial),
+    provenance: 'direct-api',
         metadata: { ioc_type: ioc.ioc_type, ioc_value: ioc.ioc_value, malware: ioc.malware, malware_alias: ioc.malware_alias, threat_type: ioc.threat_type, reporter: ioc.reporter, reference: ioc.reference }
       }))
       return c.json({ events, count: events.length, source: 'threatfox' })
