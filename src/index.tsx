@@ -232,7 +232,7 @@ interface TargetConfig {
 }
 
 const TARGETS: Record<string, TargetConfig> = {
-  opensky: { url: 'https://opensky-network.org/api/states/all', timeout: 15000, fallbackUrl: 'https://opensky-network.org/api/states/all?lamin=-60&lamax=60&lomin=-180&lomax=180' },
+  opensky: { url: 'https://api.adsb.one/v2/point/20/10/18000', timeout: 15000, fallbackUrl: 'https://api.adsb.one/v2/point/0/0/18000' },
   military: { url: 'https://adsbexchange-com1.p.rapidapi.com/v2/mil/', secret: 'RAPIDAPI_KEY', authType: 'rapidapi', rapidApiHost: 'adsbexchange-com1.p.rapidapi.com', timeout: 10000 },
   gfw_fishing: { url: 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-fishing-events:latest&limit=50&offset=0', secret: 'GFW_TOKEN', authType: 'bearer', timeout: 14000 },
   gfw_gap: { url: 'https://gateway.api.globalfishingwatch.org/v3/events?datasets[0]=public-global-gaps-events:latest&limit=50&offset=0', secret: 'GFW_TOKEN', authType: 'bearer', timeout: 14000 },
@@ -274,6 +274,30 @@ app.post('/api/proxy', async (c) => {
       } else { return c.json(upstreamError(target, 0, String(err))) }
     }
     if (!res!.ok) { const body = await res!.text(); return c.json(upstreamError(target, res!.status, body.slice(0, 400))) }
+    // Transform adsb.one format -> OpenSky states[] format for frontend parseOpenSky()
+    if (target === 'opensky') {
+      const raw = await res!.json() as any
+      const ac: any[] = raw.ac || raw.aircraft || []
+      const states = ac
+        .filter((a: any) => typeof a.lat === 'number' && typeof a.lon === 'number')
+        .map((a: any) => [
+          a.hex || '',
+          (a.flight || '').trim(),
+          a.r || '',
+          null, null,
+          a.lon, a.lat,
+          typeof a.alt_baro === 'number' ? a.alt_baro / 3.28084 : null,
+          a.alt_baro === 'ground',
+          typeof a.gs === 'number' ? a.gs / 1.944 : null,
+          a.track || null,
+          a.baro_rate || null,
+          null,
+          typeof a.alt_geom === 'number' ? a.alt_geom / 3.28084 : null,
+          a.squawk || null,
+          false, 0
+        ])
+      return c.json({ states, time: Math.floor(Date.now() / 1000) })
+    }
     if (config.responseType === 'text') return c.text(await res!.text())
     return c.json(await res!.json())
   } catch (error) { return c.json(upstreamError(target, 0, String(error))) }
