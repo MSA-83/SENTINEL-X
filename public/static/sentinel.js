@@ -100,6 +100,15 @@
   let timeline = []            // log entries
   // ── TIMELINE ──
   let tlEnabled = false, tlCursor = Date.now(), tlWindow = 86400000, tlPlaying = false, tlSpeed = 1, tlPlayTimer = null
+  // ── UI STATE ──
+  let activeDomain = "ALL"
+  let drawerOpen = false
+  let drawerTarget = "layers"
+  let cardExpanded = {}
+  const seenHashes = new Set()
+  let sourceHealthData = []
+  let lastFetchMs = 0
+  let renderScheduled = false
   const zoneCircles = []
   const zoneLabels = []
 
@@ -388,11 +397,14 @@
   }
 
   function replaceEntities(newEntities, prefix) {
+    // Remove old entities and clear their hashes from dedup set
+    const toRemove = entities.filter(e => e.id.startsWith(prefix))
+    toRemove.forEach(e => seenHashes.delete(e.raw_payload_hash || e.id))
     // Remove old entities matching prefix
     for (let i = entities.length - 1; i >= 0; i--) {
       if (entities[i].id.startsWith(prefix)) entities.splice(i, 1)
     }
-    entities.push(...newEntities)
+    const deduped = newEntities.filter(e => { const h = e.raw_payload_hash || e.id; if (seenHashes.has(h)) return false; seenHashes.add(h); return true }); entities.push(...deduped)
     refreshMap()
   }
 
@@ -431,6 +443,9 @@
       const layerKey = typeToLayer(e.entity_type)
       const cfg = LAYERS[layerKey]
       if (!cfg || !layerGroups[layerKey]) return
+      if (domainKeys && !domainKeys.has(layerKey)) return
+      if (rendered >= mobileLimit) return
+      rendered++
 
       const isInferred = e.provenance === 'geocoded-inferred' || e.provenance === 'no-location'
       const sz = e.severity === 'critical' ? 14 : e.severity === 'high' ? 11 : 9
@@ -827,12 +842,22 @@
     }
     h += '</div>'
 
-    // ── LEFT PANEL ──
-    h += '<div class="lp"><div class="tabs">'
-    ;[['layers', 'LAYERS'], ['threat', 'THREAT ' + critCount], ['sources', 'SOURCES']].forEach(([id, label]) => {
-      h += `<div class="tab${panel === id ? ' active' : ''}" onclick="S._setPanel('${id}')">${label}</div>`
-    })
-    h += '</div><div class="lp-body">'
+    // ── LEFT PANEL (domain tabs + panel tabs) ──
+    var mob = isMobile()
+    var panelHtml = ''
+    var DOMS = ['ALL','AIR','SEA','SPACE','WEATHER','CONFLICT','CYBER','GNSS','SOCIAL']
+    panelHtml += "<div class=\"dom-tabs\">"
+    DOMS.forEach(function(d,i){ panelHtml += "<div class=\"dom-tab" + (activeDomain===d?" active":"") + "\" onclick=\"S._setDomIdx(" + i + ")\">" + d + "</div>" })
+    panelHtml += "</div><div class=\"tabs\">"
+    var PANELS = [["layers","LAYERS"],["threat","THREAT " + critCount],["sources","SOURCES"]]
+    PANELS.forEach(function(it,i){ panelHtml += "<div class=\"tab" + (panel===it[0]?" active":"") + "\" onclick=\"S._setPanelIdx(" + i + ")\">" + it[1] + "</div>" })
+    panelHtml += "</div><div class=\"lp-body\">"
+    if(mob){
+      if(drawerOpen){ h += "<div class=\"drawer-overlay\" onclick=\"S._closeDrawer()\"></div><div class=\"drawer\">" + panelHtml }
+      else { h += "<div class=\"mob-btn-open\" onclick=\"S._openDrawer()\">&#9776; LAYERS</div>" }
+    } else {
+      h += '<div class="lp">' + panelHtml
+    }
 
     if (panel === 'layers') {
       let currentDomain = ''
@@ -872,13 +897,21 @@
         const st = sourceHealth[k]
         h += `<div class="src-row"><span class="layer-label">${cfg.label}</span><span class="src-badge ${st}">${st.toUpperCase()}</span><span class="src-detail">${cfg.src}</span></div>`
       })
+      if(sourceHealthData.length > 0){
+        h += "<div class="domain-hdr" style="margin-top:6px">BACKEND METRICS</div>"
+        sourceHealthData.forEach(function(s){
+          var stCls = s.status==="live" ? "live" : s.status==="error" ? "error" : "loading"
+          var latency = s.latency_ms ? (" " + s.latency_ms + "ms") : ""
+          h += "<div class="src-row"><span class="layer-label">" + (s.name||s.key) + "</span><span class="src-badge " + stCls + "">" + (s.status||"").toUpperCase() + latency + "</span></div>"
+        })
+      }
       h += '<div class="domain-hdr" style="margin-top:8px">TIMELINE</div>'
       timeline.slice(0, 20).forEach(t => {
         h += `<div class="log-row"><span class="log-time">${t.time.slice(11, 19)}</span><span class="log-msg">${t.msg}</span></div>`
       })
     }
 
-    h += '</div></div>'
+    h += '</div></div>'  // close lp-body + (lp or drawer)
 
     // ── INSPECTOR ──
     if (selected) {
@@ -891,7 +924,7 @@
       // Meta badges
       h += '<div class="rp-badges">'
       h += `<span class="badge" style="background:${t.col}22;color:${t.col}">${t.level} ${t.score}</span>`
-      h += `<span class="badge conf">${e.confidence}% CONF</span>`
+      h += confChip(e.confidence, e.provenance) + freshChip(e.timestamp)
       if (isInf) h += '<span class="badge inferred">INFERRED LOC</span>'
       h += `<span class="badge prov">${e.provenance}</span>`
       if (e.severity !== 'info') h += `<span class="badge sev-${e.severity}">${e.severity.toUpperCase()}</span>`
@@ -1074,6 +1107,78 @@
 
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // HELPERS — freshness, chips, domain, mobile
+  // ═══════════════════════════════════════════════════════════════════════════
+  function isMobile() { return window.innerWidth < 768 }
+
+  function freshness(ts) {
+    if (!ts) return { label: "NO DATE", cls: "fr-old" }
+    const age = Date.now() - new Date(ts).getTime()
+    if (age < 300000)  return { label: "LIVE",    cls: "fr-live" }
+    if (age < 3600000) return { label: "< 1H",    cls: "fr-recent" }
+    if (age < 86400000) return { label: "< 24H",  cls: "fr-stale" }
+    return { label: "OLD",  cls: "fr-old" }
+  }
+
+  function confChip(n, prov) {
+    const cls = n >= 80 ? "cc-high" : n >= 50 ? "cc-med" : "cc-low"
+    const inferred = prov === "geocoded-inferred" ? " INFERRED" : ""
+    return "<span class=\"chip " + cls + "\">" + n + "%" + inferred + "</span>"
+  }
+
+  function sevChip(s) {
+    const col = s === "critical" ? "chip-crit" : s === "high" ? "chip-high" : s === "medium" ? "chip-med" : s === "low" ? "chip-low" : "chip-info"
+    return s !== "info" ? "<span class=\"chip " + col + "\">" + s.toUpperCase() + "</span>" : ""
+  }
+
+  function freshChip(ts) {
+    const f = freshness(ts)
+    return "<span class=\"chip " + f.cls + "\">" + f.label + "</span>"
+  }
+
+  function domainLayerKeys(dom) {
+    return Object.entries(LAYERS).filter(function(kv){ return kv[1].domain === dom }).map(function(kv){ return kv[0] })
+  }
+
+  function setActiveDomain(dom) {
+    activeDomain = dom
+    refreshMap()
+    renderUI()
+  }
+
+  function openDrawer(target) {
+    drawerOpen = true
+    drawerTarget = target || "layers"
+    renderUI()
+  }
+
+  function closeDrawer() {
+    drawerOpen = false
+    renderUI()
+  }
+
+  function toggleCardExpand(id) {
+    cardExpanded[id] = !cardExpanded[id]
+    renderUI()
+  }
+
+  function scheduledRefreshMap() {
+    if (renderScheduled) return
+    renderScheduled = true
+    requestAnimationFrame(function() {
+      renderScheduled = false
+      refreshMap()
+    })
+  }
+
+  async function fetchSourceHealth() {
+    try {
+      const data = await getApi("/api/sources/health")
+      if (data && data.sources) { sourceHealthData = data.sources; renderUI() }
+    } catch(e) { /* non-critical */ }
+  }
+
   // KEYBOARD
   // ═══════════════════════════════════════════════════════════════════════════
   function initKeyboard() {
@@ -1120,6 +1225,11 @@
     _tlCycleSpeed: () => { tlCycleSpeed() },
     _tlCycleWindow: () => { tlCycleWindow() },
     _tlSeek: ev => { tlSeek(ev) },
+    _setDomIdx: function(i){ setActiveDomain(["ALL","AIR","SEA","SPACE","WEATHER","CONFLICT","CYBER","GNSS","SOCIAL"][i]) },
+    _setPanelIdx: function(i){ panel=["layers","threat","sources"][i]; renderUI() },
+    _setDomain: function(d){ setActiveDomain(d) },
+    _openDrawer: function(){ openDrawer("layers") },
+    _closeDrawer: function(){ closeDrawer() },
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1133,6 +1243,8 @@
     renderUI()
     log('SENTINEL OS v6.2 initialized', 'info')
     fetchAll()
+    fetchSourceHealth()
+    setInterval(fetchSourceHealth, 120000)
     // CelesTrak TLE propagation (delayed — non-critical)
     setTimeout(fetchCelesTrak, 3000)
     // Periodic refresh

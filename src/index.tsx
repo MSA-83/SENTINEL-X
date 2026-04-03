@@ -778,6 +778,46 @@ app.get('/api/status', (c) => {
   for (const k of keyNames) keys[k] = !!(c.env[k])
   return c.json({ keys, targets: Object.keys(TARGETS).length, fusion_zones: FUSION_ZONES.length, gnss_zones: GNSS_ZONES.length, geocoding_entries: Object.keys(GEO_DB).length })
 })
+// Source health endpoint — probes free sources with latency measurement
+app.get("/api/sources/health", async (c) => {
+  const FREE_PROBES = [
+    { name: "OpenSky ADS-B",   key: "opensky",   url: "https://opensky-network.org/api/states/all?lamin=35&lamax=36&lomin=14&lomax=15" },
+    { name: "USGS Seismic",    key: "usgs",      url: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson" },
+    { name: "GDELT 2.0",       key: "gdelt",     url: "https://api.gdeltproject.org/api/v2/doc/doc?query=test&mode=artlist&maxrecords=1&format=json" },
+    { name: "ReliefWeb",       key: "reliefweb", url: "https://api.reliefweb.int/v1/disasters?appname=sentinel-os-osint&limit=1" },
+    { name: "CISA KEV",        key: "cisa_kev",  url: "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" },
+    { name: "URLhaus",         key: "urlhaus",   url: "https://urlhaus-api.abuse.ch/v1/urls/recent/limit/1/", method: "POST" },
+    { name: "ThreatFox", key: "threatfox", url: "https://threatfox-api.abuse.ch/api/v1/", method: "POST", body: '{"query":"get_iocs","days":1}' },
+  ]
+  const KEY_SOURCES = [
+    { name: "NASA FIRMS",         key: "nasa_firms",  envKey: "NASA_FIRMS_KEY" as keyof Bindings },
+    { name: "OpenWeatherMap",     key: "owm",         envKey: "OWM_KEY" as keyof Bindings },
+    { name: "N2YO Satellites",    key: "n2yo",        envKey: "N2YO_KEY" as keyof Bindings },
+    { name: "Global Fish Watch",  key: "gfw",         envKey: "GFW_TOKEN" as keyof Bindings },
+    { name: "AlienVault OTX",     key: "otx",         envKey: "OTX_KEY" as keyof Bindings },
+    { name: "Shodan",             key: "shodan",      envKey: "SHODAN_KEY" as keyof Bindings },
+    { name: "ACLED",              key: "acled",       envKey: "ACLED_KEY" as keyof Bindings },
+    { name: "AISStream",          key: "aisstream",   envKey: "AISSTREAM_KEY" as keyof Bindings },
+    { name: "NewsAPI",            key: "newsapi",     envKey: "NEWS_API_KEY" as keyof Bindings },
+    { name: "RapidAPI (Mil-Air)", key: "rapidapi",    envKey: "RAPIDAPI_KEY" as keyof Bindings },
+  ]
+  const probeResults = await Promise.all(FREE_PROBES.map(async (p) => {
+    const t0 = Date.now()
+    try {
+      const res = await fetch(p.url, { method: p.method || "GET", body: p.body || undefined, signal: AbortSignal.timeout(8000), headers: { "User-Agent": UA, ...(p.body ? { "Content-Type": "application/json" } : {}) } })
+      return { name: p.name, key: p.key, status: res.ok ? "live" : "error", latency_ms: Date.now()-t0, key_configured: true, error: res.ok ? null : "HTTP " + res.status, checked_at: new Date().toISOString() }
+    } catch(err) {
+      return { name: p.name, key: p.key, status: "error", latency_ms: Date.now()-t0, key_configured: true, error: String(err).slice(0,100), checked_at: new Date().toISOString() }
+    }
+  }))
+  const keyResults = KEY_SOURCES.map((s) => ({
+    name: s.name, key: s.key, status: c.env[s.envKey] ? "configured" : "no-key",
+    latency_ms: null, key_configured: !!(c.env[s.envKey]), error: c.env[s.envKey] ? null : "API key not set",
+    checked_at: new Date().toISOString()
+  }))
+  const all = [...probeResults, ...keyResults]
+  return c.json({ sources: all, checked_at: new Date().toISOString(), total: all.length, live: all.filter(r => r.status === "live").length })
+})
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HTML SHELL — served at /
