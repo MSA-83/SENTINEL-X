@@ -437,12 +437,17 @@
     // Clear all layer groups
     Object.values(layerGroups).forEach(g => g.clearLayers())
 
+    var mobile = (typeof isMobile === 'function') && isMobile()
+    var mobileLimit = mobile ? 150 : 9999
+    var rendered = 0
+    var domainKeys = activeDomain === 'ALL' ? null : new Set(domainLayerKeys(activeDomain))
     // Add entities to appropriate layer groups
     tlVisibleEntities().forEach(e => {
       if (e.lat == null || e.lon == null) return
       const layerKey = typeToLayer(e.entity_type)
       const cfg = LAYERS[layerKey]
       if (!cfg || !layerGroups[layerKey]) return
+      if (!layerState[layerKey]) return
       if (domainKeys && !domainKeys.has(layerKey)) return
       if (rendered >= mobileLimit) return
       rendered++
@@ -898,11 +903,11 @@
         h += `<div class="src-row"><span class="layer-label">${cfg.label}</span><span class="src-badge ${st}">${st.toUpperCase()}</span><span class="src-detail">${cfg.src}</span></div>`
       })
       if(sourceHealthData.length > 0){
-        h += "<div class="domain-hdr" style="margin-top:6px">BACKEND METRICS</div>"
+        h += '<div class="domain-hdr" style="margin-top:6px">BACKEND METRICS</div>'
         sourceHealthData.forEach(function(s){
           var stCls = s.status==="live" ? "live" : s.status==="error" ? "error" : "loading"
           var latency = s.latency_ms ? (" " + s.latency_ms + "ms") : ""
-          h += "<div class="src-row"><span class="layer-label">" + (s.name||s.key) + "</span><span class="src-badge " + stCls + "">" + (s.status||"").toUpperCase() + latency + "</span></div>"
+          h += '<div class="src-row"><span class="layer-label">' + (s.name||s.key) + '</span><span class="src-badge ' + stCls + '">' + (s.status||'').toUpperCase() + latency + '</span></div>'
         })
       }
       h += '<div class="domain-hdr" style="margin-top:8px">TIMELINE</div>'
