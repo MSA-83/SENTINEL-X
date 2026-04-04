@@ -189,11 +189,12 @@ function geocodeFromText(text: string): { lat: number; lon: number; region: stri
     }
   }
   if (!best) return null
-  // Jitter coordinates to avoid false precision
-  const jitter = () => (Math.random() - 0.5) * 1.2
-  // Confidence: longer match = slightly higher, but never above 35 (it's still text-inferred)
+  // Deterministic jitter from text hash (stable per-text, no random drift)
+  let _h = 0; for (let _i = 0; _i < text.length; _i++) _h = Math.imul(31, _h) + text.charCodeAt(_i) | 0
+  const jLat = ((_h & 0xffff) / 0xffff - 0.5) * 0.5
+  const jLon = (((_h >>> 16) & 0xffff) / 0xffff - 0.5) * 0.5
   const confidence = Math.min(35, 15 + bestLen * 2)
-  return { lat: best.entry.lat + jitter(), lon: best.entry.lon + jitter(), region: best.entry.region, matched: best.key, confidence }
+  return { lat: best.entry.lat + jLat, lon: best.entry.lon + jLon, region: best.entry.region, matched: best.key, confidence }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -203,7 +204,8 @@ async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 12000)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(url, { ...opts, signal: controller.signal, headers: { 'User-Agent': UA, ...((opts.headers as Record<string, string>) || {}) } })
+    const hdrs = new Headers((opts.headers as HeadersInit) || {}); hdrs.set('User-Agent', UA)
+    const res = await fetch(url, { ...opts, signal: controller.signal, headers: hdrs })
     return res
   } finally {
     clearTimeout(timer)
@@ -444,7 +446,7 @@ app.post('/api/intel/gdelt', async (c) => {
   const { category } = await c.req.json<{ category?: string }>().catch(() => ({ category: 'conflict' }))
   const catKey = category === 'maritime' ? 'gdelt_maritime' : category === 'nuclear' ? 'gdelt_nuclear' : category === 'cyber' ? 'gdelt_cyber' : 'gdelt_conflict'
   const config = TARGETS[catKey]
-  if (!config || typeof config.url !== 'string') return c.json(upstreamError('gdelt', 400, 'Invalid category'))
+  if (!config || typeof config.url !== 'string') return c.json(upstreamError('gdelt', 400, 'Invalid category'), 400)
   const cat = category || 'conflict'
   const entityType = cat === 'cyber' ? 'cyber_intel' : cat === 'nuclear' ? 'nuclear_intel' : 'conflict_intel'
   // Build NewsAPI query as fast fallback (key-gated, ~1s response)
@@ -474,7 +476,7 @@ app.post('/api/intel/gdelt', async (c) => {
   const [gdeltR, newsR] = await Promise.allSettled([gdeltP, newsP])
   if (gdeltR.status === 'fulfilled' && gdeltR.value?.articles?.length) {
     const events = geocodeArticles(gdeltR.value.articles, 'GDELT 2.0', 'gdelt')
-    return c.json({ events, total: gdeltR.value.articles.length, geocoded: events.length, source: 'gdelt' })
+    if (events.length > 0) return c.json({ events, total: gdeltR.value.articles.length, geocoded: events.length, source: 'gdelt' })
   }
   if (newsR.status === 'fulfilled' && newsR.value?.articles?.length) {
     const events = geocodeArticles(newsR.value.articles, 'NewsAPI (conflict intel)', 'news')
@@ -1210,7 +1212,8 @@ app.get('/api/space/spacetrack', async (c) => {
     const login = await safeFetch('https://www.space-track.org/ajaxauth/login',
       { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: creds }, 15000)
     if (!login.ok) return c.json(upstreamError('spacetrack', login.status, 'Login failed'))
-    const cookie = login.headers.get('set-cookie') || ''
+    const rawCookie = login.headers.get('set-cookie') || ''
+  const cookie = rawCookie.split(';')[0] || ''  // name=value only
     const q = 'https://www.space-track.org/basicspacedata/query/class/gp/EPOCH/>now-1/orderby/NORAD_CAT_ID/limit/200/format/json'
     const dr = await safeFetch(q, { headers: { Cookie: cookie } }, 20000)
     if (!dr.ok) return c.json(upstreamError('spacetrack', dr.status, 'Data fetch failed'))

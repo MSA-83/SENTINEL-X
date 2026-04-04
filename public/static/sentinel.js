@@ -11,6 +11,7 @@
  */
 ;(function () {
   'use strict'
+  function esc(s) { var v=String(s==null?'':s); return v.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/["]/g,'&quot;') }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // FETCH HELPERS — all traffic via BFF
@@ -18,6 +19,7 @@
   async function api(path, opts) {
     try {
       const r = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts?.headers || {}) } })
+      if (!r.ok) throw new Error('HTTP ' + r.status)
       const ct = r.headers.get('content-type') || ''
       if (ct.includes('text/plain') || ct.includes('text/csv')) return await r.text()
       return await r.json()
@@ -217,7 +219,7 @@
       const frp = parseFloat(c[fr] || '0')
       return ce({
         id: 'fire_' + i, entity_type: 'wildfire', source: 'NASA FIRMS', source_url: 'https://firms.modaps.eosdis.nasa.gov/',
-        title: 'VIIRS Hotspot \u2014 ' + (c[5] || 'Unknown'), lat, lon,
+        title: 'VIIRS Hotspot [' + (c[hdr.indexOf('satellite')]||'VIIRS') + '] ' + (c[hdr.indexOf('acq_date')]||''), lat, lon,
         confidence: parseInt(c[cf]) || 50, severity: frp >= 200 ? 'high' : frp >= 50 ? 'medium' : 'low',
         tags: ['wildfire', 'viirs'], metadata: { frp, brightness: c[hdr.indexOf('bright_ti4')], acq_date: c[hdr.indexOf('acq_date')] }
       })
@@ -263,7 +265,7 @@
   function parseGDACS(data) {
     return (data?.features || []).map((f, i) => {
       const p = f.properties || {}, c = f.geometry?.coordinates || []
-      if (!c[1] || !c[0]) return null
+      if (c[1] == null || c[0] == null) return null
       const alert = (p.alertlevel || '').toLowerCase()
       return ce({
         id: 'gdacs_' + i, entity_type: 'disaster', source: 'GDACS', source_url: 'https://www.gdacs.org/',
@@ -513,7 +515,7 @@
     layerState[k] = !layerState[k]
     if (layerState[k]) { if (map && layerGroups[k]) layerGroups[k].addTo(map) }
     else { if (map && layerGroups[k]) map.removeLayer(layerGroups[k]) }
-    renderUI()
+    refreshMap()
   }
 
   function toggleZones() {
@@ -530,7 +532,7 @@
     searchQuery = q
     if (!q || q.length < 2) { searchResults = []; return }
     const lower = q.toLowerCase()
-    searchResults = entities.filter(e => e.title.toLowerCase().includes(lower) || (e.tags || []).some(t => t.toLowerCase().includes(lower)) || (e.region || '').toLowerCase().includes(lower) || (e.source || '').toLowerCase().includes(lower)).slice(0, 15)
+    searchResults = entities.filter(e => (e.title||'').toLowerCase().includes(lower) || (e.tags || []).some(t => t.toLowerCase().includes(lower)) || (e.region || '').toLowerCase().includes(lower) || (e.source || '').toLowerCase().includes(lower)).slice(0, 15)
   }
 
   function flyTo(e) {
@@ -635,6 +637,7 @@
 
     // Phase 5: Cyber feeds
     setTimeout(async () => {
+      if (cycle !== _fetchCycle) return
       try {
         const [kevR, otxR, urlR, tfR] = await Promise.allSettled([
           getApi('/api/cyber/cisa-kev'), getApi('/api/cyber/otx'), getApi('/api/cyber/urlhaus'), getApi('/api/cyber/threatfox')
@@ -651,6 +654,7 @@
 
     // Phase 6: GNSS + Social
     setTimeout(async () => {
+      if (cycle !== _fetchCycle) return
       try {
         const [gnssR, socialR] = await Promise.allSettled([getApi('/api/gnss/anomalies'), getApi('/api/social/reddit')])
         if (gnssR.status === 'fulfilled' && gnssR.value?.events) {
@@ -667,6 +671,7 @@
       } catch (e) { log('Phase 6 error: ' + e, 'error') }
     }, 4000)
 
+    const _fetchCycle = cycle
     fetching = false
     refreshMap()
     log('Cycle ' + cycle + ' complete \u2014 ' + entities.length + ' entities', 'info')
@@ -841,7 +846,7 @@
       h += '<div class="search-results">'
       searchResults.forEach((e, i) => {
         const col = LAYERS[typeToLayer(e.entity_type)]?.color || '#fff'
-        h += `<div class="search-item" onclick="S._searchSelect(${i})"><span class="dot" style="background:${col}"></span><span class="search-title">${e.title.slice(0, 60)}</span><span class="search-src">${e.source}</span></div>`
+        h += `<div class="search-item" onclick="S._searchSelect(${i})"><span class="dot" style="background:${col}"></span><span class="search-title">${esc(e.title.slice(0, 60))}</span><span class="search-src">${esc(e.source)}</span></div>`
       })
       h += '</div>'
     }
@@ -869,13 +874,13 @@
       Object.entries(LAYERS).forEach(([k, cfg]) => {
         if (cfg.domain !== currentDomain) { currentDomain = cfg.domain; h += `<div class="domain-hdr">${currentDomain}</div>` }
         const on = layerState[k], st = sourceHealth[k]
-        const dotCol = st === 'live' ? '#00ff88' : st === 'error' ? '#ff3355' : '#ffaa00'
+        const dotCol = st === 'live' ? '#00ff88' : st === 'error' ? '#ff3355' : (st === 'configured' || st === 'no-key') ? '#4466aa' : '#ffaa00'
         h += `<div class="layer-row${on ? '' : ' off'}" onclick="S._toggle('${k}')">`
         h += `<span class="dot" style="background:${on ? cfg.color : '#0a1520'}"></span>`
         h += `<span class="layer-label">${cfg.icon} ${cfg.label}</span>`
         h += `<span class="layer-count" style="color:${cfg.color}">${counts[k] || 0}</span>`
         h += `<span class="dot-sm" style="background:${dotCol}"></span>`
-        h += `<span class="layer-status">${st === 'live' ? 'LIVE' : st === 'error' ? 'ERR' : 'LOAD'}</span>`
+        h += `<span class="layer-status">${st === 'live' ? 'LIVE' : st === 'error' ? 'ERR' : st === 'configured' ? 'CFG' : st === 'no-key' ? 'N/A' : 'LOAD'}</span>`
         h += '</div>'
       })
     }
@@ -889,7 +894,7 @@
       h += '</div>'
       threatBoard.forEach(t => {
         h += `<div class="threat-item${t.level === 'CRITICAL' ? ' t-crit' : t.level === 'HIGH' ? ' t-high' : ''}" onclick="S._flyTo('${t.entity.id}')">`
-        h += `<span class="threat-name">${t.entity.title.slice(0, 50)}</span>`
+        h += `<span class="threat-name">${esc(t.entity.title.slice(0, 50))}</span>`
         h += `<span class="threat-score" style="color:${t.col}">${t.score}</span>`
         if (t.reasons[0]) h += `<div class="threat-reason">${t.reasons[0]}</div>`
         h += '</div>'
@@ -905,7 +910,7 @@
       if(sourceHealthData.length > 0){
         h += '<div class="domain-hdr" style="margin-top:6px">BACKEND METRICS</div>'
         sourceHealthData.forEach(function(s){
-          var stCls = s.status==="live" ? "live" : s.status==="error" ? "error" : "loading"
+          var stCls = s.status==="live" ? "live" : s.status==="error" ? "error" : (s.status==="configured"||s.status==="no-key") ? "configured" : "loading"
           var latency = s.latency_ms ? (" " + s.latency_ms + "ms") : ""
           h += '<div class="src-row"><span class="layer-label">' + (s.name||s.key) + '</span><span class="src-badge ' + stCls + '">' + (s.status||'').toUpperCase() + latency + '</span></div>'
         })
@@ -926,7 +931,7 @@
       const isExp = cardExpanded[expKey]
       h += '<div class="rp" data-eid="' + e.id + '">'
       h += '<div class="rp-header">'
-      h += '<span class="rp-title">' + e.title.slice(0,80) + '</span>'
+      h += '<span class="rp-title">' + esc(e.title.slice(0,80)) + '</span>'
       h += '<span class="rp-close" onclick="S._closeInspector()">X</span>'
       h += '</div>'
       h += '<div class="rp-chips">'
@@ -937,7 +942,7 @@
       if (isInf) h += '<span class="badge inferred">INF</span>'
       h += '</div>'
       h += '<div class="rp-summary">'
-      h += '<span class="rp-key">' + e.source + '</span>'
+      h += '<span class="rp-key">' + esc(e.source) + '</span>'
       h += '<span class="badge">' + e.entity_type.toUpperCase().replace('_',' ') + '</span>'
       if (e.lat != null) h += '<span class="rp-coord">' + e.lat.toFixed(3) + ',' + e.lon.toFixed(3) + (isInf ? ' ~' : '') + '</span>'
       h += '</div>'
@@ -950,9 +955,9 @@
         if (e.lat != null) h += '<div class="rp-field"><span class="rp-key">POS</span><span class="rp-val">' + e.lat.toFixed(4) + ', ' + e.lon.toFixed(4) + (isInf ? ' (inferred)' : '') + '</span></div>'
         if (e.altitude != null) h += '<div class="rp-field"><span class="rp-key">ALT</span><span class="rp-val">' + e.altitude.toLocaleString() + ' ft</span></div>'
         if (e.velocity != null) h += '<div class="rp-field"><span class="rp-key">VEL</span><span class="rp-val">' + e.velocity + ' kts</span></div>'
-        if (e.region) h += '<div class="rp-field"><span class="rp-key">REGION</span><span class="rp-val">' + e.region + '</span></div>'
-        if (e.description) h += '<div class="rp-field"><span class="rp-key">DESC</span><span class="rp-val">' + e.description.slice(0,200) + '</span></div>'
-        if (e.tags && e.tags.length > 0) h += '<div class="rp-field"><span class="rp-key">TAGS</span><span class="rp-val">' + e.tags.join(', ') + '</span></div>'
+        if (e.region) h += '<div class="rp-field"><span class="rp-key">REGION</span><span class="rp-val">' + esc(e.region) + '</span></div>'
+        if (e.description) h += '<div class="rp-field"><span class="rp-key">DESC</span><span class="rp-val">' + esc(e.description.slice(0,200)) + '</span></div>'
+        if (e.tags && e.tags.length > 0) h += '<div class="rp-field"><span class="rp-key">TAGS</span><span class="rp-val">' + esc((e.tags||[]).join(', ')) + '</span></div>'
         if (e.entity_type.startsWith('cyber_')) {
           h += '<div class="rp-card cyber-card"><div class="card-header">CYBER INTEL</div>'
           if (e.metadata && e.metadata.cve_id) h += '<div class="rp-field"><span class="rp-key">CVE</span><span class="rp-val">' + e.metadata.cve_id + '</span></div>'
@@ -982,7 +987,7 @@
           h += '<div class="rp-meta-toggle" onclick="S._metaToggle(this)">RAW METADATA &#9660;</div>'
           h += '<div class="rp-meta" style="display:none">'
           Object.entries(e.metadata).forEach(function([k,v]) {
-            if (v != null && v !== '') h += '<div class="rp-field"><span class="rp-key">' + k + '</span><span class="rp-val mono">' + (typeof v === 'object' ? JSON.stringify(v) : String(v).slice(0,200)) + '</span></div>'
+            if (v != null && v !== '') h += '<div class="rp-field"><span class="rp-key">' + esc(k) + '</span><span class="rp-val mono">' + esc(typeof v === 'object' ? JSON.stringify(v) : String(v).slice(0,200)) + '</span></div>'
           })
           h += '</div>'
         }
@@ -1034,7 +1039,7 @@
     return entities.filter(function(e) {
       if (!e.timestamp) return true
       var t = new Date(e.timestamp).getTime()
-      return !isNaN(t) && t <= cutoff
+      return !isNaN(t) && t <= cutoff && t >= cutoff - tlWindow
     })
   }
   function tlPlay() {
@@ -1239,7 +1244,7 @@
   // BOOT
   // ═══════════════════════════════════════════════════════════════════════════
   function boot() {
-    console.log('%c SENTINEL OS v6.1 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px')
+    console.log('%c SENTINEL OS v6.2 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px')
     console.log('Global Situational Awareness Platform — 20+ live OSINT layers')
     initMap()
     initKeyboard()
