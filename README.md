@@ -334,9 +334,9 @@ Reference sources: [GPSJam.org](https://gpsjam.org/), [Eurocontrol](https://www.
 - Added DJB2 + SHA-256 payload hashing for all upstream data
 - Added Mastodon social intelligence (`/api/social/mastodon`) — infosec.exchange, ioc.exchange
 - Added AVWX METAR canonical events with aviation weather parsing
-- Added time scrubber (T key) for temporal filtering (1h-168h)
-- Added connection health heartbeat (30s interval)
-- Added auto-refresh countdown in header
+- Added time scrubber (T key) for temporal filtering (1h-72h) with full-width scrub bar
+- Added connection health heartbeat — green/red dot indicator in header reflects live connectivity
+- Added auto-refresh countdown in classification banner (shows cycle number + seconds to next refresh)
 - Added freshness badges in inspector (LIVE / Xh / Xd)
 - Added METAR inspector card with raw METAR, flight rules, wind, visibility, temperature
 - Expanded GEO_DB from ~67 to ~120 locations (cities, regions, military terms)
@@ -344,6 +344,7 @@ Reference sources: [GPSJam.org](https://gpsjam.org/), [Eurocontrol](https://www.
 - Improved CISA KEV resilience (triple-fallback: CISA → cisagov GitHub → catalog GitHub)
 - Added @cloudflare/workers-types to devDependencies
 - XSS protection: All dynamic inspector content HTML-escaped
+- CSS overhaul: connection health indicators (.conn-ok/.conn-err), new time scrubber bar, tablet breakpoint, extra-large screen support, focus-visible outlines, high-DPI optimizations
 - Version bump to 7.0.0
 
 ### v6.1.0 (2026-04-02)
