@@ -1,6 +1,15 @@
 /* ═══════════════════════════════════════════════════════════════
-   SENTINEL OS v6.0 — Production Dark-Ops Interface
+   SENTINEL OS v7.0 — Production Dark-Ops Interface
    Design: Palantir Gotham / NATO COP / C2 Operations
+
+   Changelog v7.0:
+     - Connection health indicators (.conn-ok, .conn-err)
+     - Time scrubber restyled (.scrubber, .scrub-*)
+     - Improved mobile responsiveness (drawer, swipe hints)
+     - Mastodon / social-card support
+     - METAR card styling
+     - Better readability (line-heights, spacing)
+     - Print / high-DPI refinements
    ═══════════════════════════════════════════════════════════════ */
 
 /* ── RESET & FOUNDATIONS ── */
@@ -60,13 +69,14 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 @keyframes slidein{from{transform:translateX(16px);opacity:0}to{transform:translateX(0);opacity:1}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @keyframes glow{0%,100%{text-shadow:0 0 8px currentColor}50%{text-shadow:0 0 24px currentColor}}
+@keyframes spin{to{transform:rotate(360deg)}}
 
 /* ── TOOLTIP ── */
 .sentinel-tooltip{
   background:rgba(4,14,24,0.95)!important;border:1px solid var(--brd)!important;
   color:var(--t1)!important;font-family:var(--mono)!important;font-size:9px!important;
   padding:5px 8px!important;border-radius:3px!important;box-shadow:0 4px 16px rgba(0,0,0,0.6)!important;
-  backdrop-filter:blur(8px)!important;max-width:280px!important;
+  backdrop-filter:blur(8px)!important;max-width:280px!important;line-height:1.4!important;
 }
 .sentinel-tooltip .leaflet-tooltip-tip{display:none!important}
 
@@ -75,7 +85,9 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 #hud>*{pointer-events:auto}
 #inspector{display:none}
 
-/* ── HEADER ── */
+/* ══════════════════════════════════════════════════════════════════
+   HEADER
+   ══════════════════════════════════════════════════════════════════ */
 .hdr{
   position:fixed;top:0;left:0;right:0;height:44px;z-index:500;
   background:linear-gradient(180deg,rgba(4,14,24,0.97),rgba(4,14,24,0.93));
@@ -86,10 +98,23 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 .hdr::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(0,212,255,0.13),transparent)}
 .hdr-left{display:flex;align-items:center;gap:10px}
 .hdr-right{display:flex;align-items:center;gap:14px}
-.hdr-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;flex-shrink:0}
+
+/* Connection health dot — default green pulse */
+.hdr-dot{
+  width:6px;height:6px;border-radius:50%;
+  background:var(--green);animation:pulse 2s infinite;flex-shrink:0;
+  transition:background 0.3s;
+}
+/* Connection OK — green */
+.hdr-dot.conn-ok{background:var(--green);animation:pulse 2s infinite}
+/* Connection ERROR — red fast flash */
+.hdr-dot.conn-err{background:var(--red)!important;animation:pulse-fast 0.8s infinite!important;box-shadow:0 0 6px rgba(255,34,68,0.5)}
+.hdr-dot-err{background:var(--red)!important;animation:pulse-fast 0.8s infinite!important}
+
 .hdr-title{font-family:var(--display);font-size:12px;font-weight:700;color:var(--t1);letter-spacing:3px}
 .hdr-sub{font-size:7px;color:var(--t3);letter-spacing:2px;display:none}
 @media(min-width:1024px){.hdr-sub{display:inline}}
+
 .hdr-btn{
   font-size:7px;letter-spacing:1.5px;padding:3px 8px;cursor:pointer;
   border:1px solid var(--brd);border-radius:2px;color:var(--t3);
@@ -97,6 +122,7 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 }
 .hdr-btn:hover{border-color:var(--cyan);color:var(--t2)}
 .hdr-btn.active{border-color:var(--cyan);color:var(--cyan);background:rgba(0,212,255,0.06)}
+
 .hdr-alert{
   font-size:7px;letter-spacing:1px;padding:3px 8px;cursor:pointer;
   background:rgba(255,34,68,0.1);color:var(--red);border:1px solid rgba(255,34,68,0.3);
@@ -104,8 +130,15 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 }
 .hdr-clock{font-family:var(--mono);font-size:10px;color:var(--cyan);letter-spacing:1px;opacity:0.8}
 .hdr-total{font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:1px}
+.hdr-refresh{
+  font-size:7px;letter-spacing:1px;padding:2px 6px;cursor:pointer;
+  color:var(--t3);font-family:var(--mono);transition:color 0.15s;
+}
+.hdr-refresh:hover{color:var(--cyan)}
 
-/* ── CLASSIFICATION BANNER ── */
+/* ══════════════════════════════════════════════════════════════════
+   CLASSIFICATION BANNER
+   ══════════════════════════════════════════════════════════════════ */
 .classif{
   position:fixed;top:44px;left:280px;right:0;height:18px;z-index:450;
   background:rgba(0,212,255,0.03);border-bottom:1px solid rgba(0,212,255,0.06);
@@ -113,7 +146,9 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
   font-size:6.5px;letter-spacing:4px;color:rgba(0,212,255,0.3);user-select:none;
 }
 
-/* ── SEARCH ── */
+/* ══════════════════════════════════════════════════════════════════
+   SEARCH
+   ══════════════════════════════════════════════════════════════════ */
 .search-wrap{
   position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:550;
   width:320px;max-width:calc(100vw - 600px);
@@ -142,12 +177,15 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .dot-sm{width:4px;height:4px;border-radius:50%;flex-shrink:0}
 
-/* ── LEFT PANEL ── */
+/* ══════════════════════════════════════════════════════════════════
+   LEFT PANEL
+   ══════════════════════════════════════════════════════════════════ */
 .lp{
   position:fixed;top:44px;left:0;bottom:0;width:280px;z-index:400;
   background:rgba(4,14,24,0.96);border-right:1px solid var(--brd);
   display:flex;flex-direction:column;
   backdrop-filter:blur(8px);
+  transition:transform 0.25s ease;
 }
 .lp::after{content:'';position:absolute;top:0;right:0;bottom:0;width:1px;background:linear-gradient(180deg,rgba(0,212,255,0.08),transparent 50%,rgba(0,212,255,0.08))}
 .lp-body{flex:1;overflow-y:auto;padding:4px 0}
@@ -184,7 +222,9 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 .layer-count{font-size:9px;font-weight:600;min-width:24px;text-align:right}
 .layer-status{font-size:6px;letter-spacing:1px;min-width:22px}
 
-/* ── THREAT PANEL ── */
+/* ══════════════════════════════════════════════════════════════════
+   THREAT PANEL
+   ══════════════════════════════════════════════════════════════════ */
 .threat-summary{padding:8px 12px;border-bottom:1px solid var(--brd)}
 .threat-stat{display:inline-flex;flex-direction:column;align-items:center;margin-right:16px}
 .threat-num{font-size:18px;font-weight:700;font-family:var(--mono)}
@@ -202,7 +242,9 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 .threat-score{font-size:11px;font-weight:700;font-family:var(--mono);float:right;margin-top:-14px}
 .threat-reason{font-size:7px;color:var(--t3);margin-top:1px}
 
-/* ── SOURCE HEALTH ── */
+/* ══════════════════════════════════════════════════════════════════
+   SOURCE HEALTH
+   ══════════════════════════════════════════════════════════════════ */
 .src-row{
   display:flex;align-items:center;gap:6px;padding:5px 12px;
   font-size:8px;border-bottom:1px solid rgba(4,14,24,0.5);
@@ -221,7 +263,9 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 .log-time{color:var(--t3);font-size:7px;flex-shrink:0}
 .log-msg{color:var(--t2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-/* ── RIGHT PANEL (Inspector) ── */
+/* ══════════════════════════════════════════════════════════════════
+   RIGHT PANEL (Inspector)
+   ══════════════════════════════════════════════════════════════════ */
 .rp{
   position:fixed;top:44px;right:0;bottom:0;width:340px;z-index:400;
   background:rgba(4,14,24,0.97);border-left:1px solid var(--brd);
@@ -232,7 +276,7 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
   display:flex;align-items:flex-start;justify-content:space-between;
   padding:12px 14px 8px;border-bottom:1px solid var(--brd);
 }
-.rp-title{font-size:10px;color:var(--t1);font-weight:600;flex:1;line-height:1.3}
+.rp-title{font-size:10px;color:var(--t1);font-weight:600;flex:1;line-height:1.4}
 .rp-close{
   font-size:10px;color:var(--t3);cursor:pointer;padding:2px 6px;
   border:1px solid var(--brd);border-radius:2px;transition:all 0.15s;
@@ -256,11 +300,12 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 
 /* ── INSPECTOR FIELDS ── */
 .rp-field{
-  display:flex;gap:8px;padding:3px 14px;font-size:8px;
+  display:flex;gap:8px;padding:4px 14px;font-size:8px;
   border-bottom:1px solid rgba(4,14,24,0.3);align-items:baseline;
+  line-height:1.45;
 }
-.rp-key{color:var(--t3);font-size:6.5px;letter-spacing:1.5px;min-width:60px;flex-shrink:0}
-.rp-val{color:var(--t1);word-break:break-all;line-height:1.4}
+.rp-key{color:var(--t3);font-size:6.5px;letter-spacing:1.5px;min-width:60px;flex-shrink:0;text-transform:uppercase}
+.rp-val{color:var(--t1);word-break:break-all;line-height:1.45}
 .rp-val.mono{font-family:var(--mono);font-size:7.5px;color:var(--cyan);opacity:0.85}
 .rp-link{color:var(--cyan);text-decoration:none;font-size:8px;word-break:break-all;opacity:0.8;transition:opacity 0.15s}
 .rp-link:hover{opacity:1;text-decoration:underline}
@@ -275,6 +320,10 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 .social-card{border-color:rgba(255,68,170,0.15)}
 .social-card .card-header{color:rgba(255,68,170,0.5)}
 
+/* ── METAR CARD ── */
+.metar-card{border-color:rgba(85,170,255,0.15)}
+.metar-card .card-header{color:rgba(85,170,255,0.5)}
+
 /* ── RAW METADATA TOGGLE ── */
 .rp-meta-toggle{
   padding:6px 14px;font-size:7px;color:var(--t3);cursor:pointer;
@@ -283,7 +332,9 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 .rp-meta-toggle:hover{color:var(--t2)}
 .rp-meta{padding:0 0 6px;border-top:1px solid var(--brd)}
 
-/* ── STATS RING ── */
+/* ══════════════════════════════════════════════════════════════════
+   STATS RING (bottom bar)
+   ══════════════════════════════════════════════════════════════════ */
 .stats-ring{
   position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:300;
   display:flex;gap:5px;align-items:center;
@@ -296,7 +347,9 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 .stat.total{border-left:1px solid var(--brd);padding-left:8px;margin-left:3px}
 .stat.total .stat-val{color:var(--t1);font-size:10px}
 
-/* ── MOBILE BAR ── */
+/* ══════════════════════════════════════════════════════════════════
+   MOBILE BAR
+   ══════════════════════════════════════════════════════════════════ */
 .mob-bar{
   position:fixed;bottom:0;left:0;right:0;height:48px;z-index:500;
   background:rgba(4,14,24,0.98);border-top:1px solid var(--brd);
@@ -308,7 +361,9 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 }
 .mob-tab.active{color:var(--cyan);border-top:2px solid var(--cyan)}
 
-/* ── LOADING SCREEN ── */
+/* ══════════════════════════════════════════════════════════════════
+   LOADING SCREEN
+   ══════════════════════════════════════════════════════════════════ */
 #loading{
   position:fixed;inset:0;z-index:9999;background:var(--bg);
   display:flex;align-items:center;justify-content:center;
@@ -318,32 +373,36 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
   width:40px;height:40px;border:2px solid var(--brd);border-top-color:var(--cyan);
   border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px;
 }
-@keyframes spin{to{transform:rotate(360deg)}}
 .load-text{font-family:var(--display);font-size:14px;color:var(--t1);letter-spacing:4px;margin-bottom:8px}
 .load-sub{font-size:9px;color:var(--t3);letter-spacing:1px}
 
-/* ── CONFIDENCE CHIP STYLES ── */
+/* ══════════════════════════════════════════════════════════════════
+   CONFIDENCE / FRESHNESS / PROVENANCE / RISK
+   ══════════════════════════════════════════════════════════════════ */
+/* Confidence chips */
 .conf-high{color:var(--green)}
 .conf-med{color:var(--amber)}
 .conf-low{color:var(--red)}
 
-/* ── FRESHNESS INDICATORS ── */
+/* Freshness indicators */
 .fresh-live{color:var(--green);font-weight:600}
 .fresh-stale{color:var(--amber)}
 .fresh-old{color:var(--t3)}
 
-/* ── PROVENANCE BADGES ── */
+/* Provenance badges */
 .prov-direct{color:var(--green);background:rgba(0,255,136,0.06);border:1px solid rgba(0,255,136,0.12)}
 .prov-inferred{color:var(--amber);background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.12)}
 .prov-curated{color:var(--purple);background:rgba(153,102,255,0.06);border:1px solid rgba(153,102,255,0.12)}
 
-/* ── RISK STATE BACKGROUNDS ── */
+/* Risk state backgrounds */
 .risk-critical{background:rgba(255,0,51,0.04);border-left:2px solid var(--red)}
 .risk-high{background:rgba(255,107,0,0.03);border-left:2px solid var(--orange)}
 .risk-medium{border-left:2px solid var(--amber)}
 .risk-low{border-left:2px solid rgba(0,212,255,0.3)}
 
-/* ── SATELLITE IMAGERY PANEL ── */
+/* ══════════════════════════════════════════════════════════════════
+   SATELLITE IMAGERY PANEL
+   ══════════════════════════════════════════════════════════════════ */
 .hud-sat-panel{
   position:fixed;top:56px;right:350px;z-index:470;
   width:310px;max-height:calc(100vh - 120px);
@@ -358,7 +417,7 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 .sat-active{background:rgba(0,212,255,0.06)!important;border-left-color:var(--cyan)!important}
 .hud-sat-panel input[type="date"]{color-scheme:dark}
 
-/* ── SATELLITE INDICATOR ── */
+/* Satellite indicator pill (bottom center) */
 .hud-sat-indicator{
   position:fixed;bottom:50px;left:50%;transform:translateX(-50%);z-index:300;
   display:flex;gap:8px;align-items:center;
@@ -368,7 +427,63 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 }
 .hud-sat-indicator:hover{background:rgba(0,212,255,0.1)}
 
-/* ── RESPONSIVE ── */
+/* ══════════════════════════════════════════════════════════════════
+   TIME SCRUBBER (v7.0 — matches sentinel.js class names)
+   Classes: .scrubber, .scrub-label, .scrub-range, .scrub-val, .scrub-close
+   ══════════════════════════════════════════════════════════════════ */
+.scrubber{
+  position:fixed;top:62px;left:280px;right:0;height:28px;z-index:420;
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  background:rgba(4,14,24,0.92);border-bottom:1px solid var(--brd);
+  backdrop-filter:blur(6px);animation:fadeIn 0.15s ease;
+}
+.scrub-label{
+  font-size:7px;letter-spacing:2px;color:var(--cyan);
+  font-family:var(--mono);user-select:none;
+}
+.scrub-range{
+  width:180px;height:3px;-webkit-appearance:none;appearance:none;
+  background:var(--bg3);border-radius:2px;outline:none;cursor:pointer;
+}
+.scrub-range::-webkit-slider-thumb{
+  -webkit-appearance:none;width:12px;height:12px;border-radius:50%;
+  background:var(--cyan);cursor:pointer;border:2px solid var(--bg1);
+  box-shadow:0 0 6px rgba(0,212,255,0.3);
+}
+.scrub-range::-moz-range-thumb{
+  width:12px;height:12px;border-radius:50%;border:2px solid var(--bg1);
+  background:var(--cyan);cursor:pointer;
+  box-shadow:0 0 6px rgba(0,212,255,0.3);
+}
+.scrub-val{
+  font-size:8px;color:var(--t1);font-family:var(--mono);
+  min-width:60px;letter-spacing:1px;
+}
+.scrub-close{
+  font-size:9px;color:var(--t3);cursor:pointer;
+  padding:2px 6px;border:1px solid var(--brd);border-radius:2px;
+  transition:all 0.15s;margin-left:4px;
+}
+.scrub-close:hover{color:var(--red);border-color:var(--red)}
+
+/* Legacy time-scrubber class aliases (backward compat) */
+.time-scrubber{
+  position:fixed;top:50px;right:350px;z-index:420;
+  display:flex;align-items:center;gap:6px;
+  background:rgba(4,14,24,0.90);border:1px solid var(--brd);
+  border-radius:3px;padding:3px 10px;backdrop-filter:blur(6px);
+}
+.ts-label{font-size:7px;letter-spacing:1.5px;color:var(--cyan);cursor:pointer;font-family:var(--mono);user-select:none}
+.ts-slider{width:80px;height:3px;-webkit-appearance:none;appearance:none;background:var(--bg3);border-radius:2px;outline:none;cursor:pointer}
+.ts-slider::-webkit-slider-thumb{-webkit-appearance:none;width:10px;height:10px;border-radius:50%;background:var(--cyan);cursor:pointer}
+.ts-slider::-moz-range-thumb{width:10px;height:10px;border-radius:50%;border:none;background:var(--cyan);cursor:pointer}
+.ts-val{font-size:7px;color:var(--t3);font-family:var(--mono);min-width:18px}
+
+/* ══════════════════════════════════════════════════════════════════
+   RESPONSIVE
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── Small screens (phones) ── */
 @media(max-width:767px){
   .lp{display:none!important}
   .classif{left:0!important}
@@ -378,9 +493,52 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
   .stats-ring{bottom:56px}
   .hud-sat-panel{right:8px!important;left:8px!important;width:auto!important;top:50px!important}
   .hud-sat-indicator{bottom:100px!important}
+  .scrubber{left:0!important;top:44px!important;z-index:460!important}
+  .time-scrubber{right:8px!important;top:44px!important;z-index:460!important}
+  .hdr-sub{display:none!important}
+  .hdr{padding:0 8px}
+  .hdr-right{gap:8px}
 }
+
+/* ── Medium screens (tablets) ── */
+@media(min-width:768px) and (max-width:1023px){
+  .lp{width:240px}
+  .classif{left:240px}
+  .search-wrap{max-width:calc(100vw - 500px)}
+}
+
+/* ── Large screens ── */
 @media(min-width:1600px){
   .lp{width:300px}
   .rp{width:380px}
   .classif{left:300px}
+  .scrubber{left:300px}
+  .scrub-range{width:260px}
+}
+
+/* ── Extra-large screens ── */
+@media(min-width:2000px){
+  .lp{width:340px}
+  .rp{width:420px}
+  .classif{left:340px}
+  .scrubber{left:340px}
+  .scrub-range{width:340px}
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   UTILITY HELPERS
+   ══════════════════════════════════════════════════════════════════ */
+
+/* Selection styling */
+::selection{background:rgba(0,212,255,0.2);color:var(--t1)}
+
+/* Focus-visible for keyboard nav */
+*:focus-visible{outline:1px solid var(--cyan);outline-offset:1px}
+
+/* High-DPI screen enhancement */
+@media(-webkit-min-device-pixel-ratio:2),(min-resolution:192dpi){
+  .sm{will-change:transform}
+  .marker-cluster-small div,.marker-cluster-medium div,.marker-cluster-large div{
+    -webkit-font-smoothing:antialiased;
+  }
 }

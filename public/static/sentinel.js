@@ -1,13 +1,15 @@
 /**
- * SENTINEL OS v6.1 — Global Situational Awareness Client
+ * SENTINEL OS v7.0 — Global Situational Awareness Client
  *
  * Architecture:
  *   - Waits for Leaflet before initializing (loaded by HTML shell dependency loader)
  *   - All API calls go through backend BFF (/api/*) — no secrets in browser
- *   - Every entity uses canonical event schema with provenance + confidence
+ *   - Every entity uses canonical event schema with provenance + confidence + raw_payload_hash
  *   - Inferred locations explicitly marked and visually down-weighted
  *   - Domain-organized layer groups with graceful failure per source
- *   - Inspector panel shows full provenance, confidence, severity, source URL
+ *   - Inspector panel shows full provenance, confidence, severity, source URL, hash
+ *   - Time scrubber for temporal filtering
+ *   - Connection health heartbeat
  */
 ;(function () {
   'use strict'
@@ -53,7 +55,7 @@
     nuclear:    { label: 'NUCLEAR',        icon: '\u2622',  color: '#ff00ff', domain: 'CONFLICT', src: 'GDELT Nuclear' },
     cyber:      { label: 'CYBER',          icon: '\uD83D\uDD12', color: '#66ffcc', domain: 'CYBER', src: 'CISA + OTX + URLhaus + ThreatFox' },
     gnss:       { label: 'GNSS',           icon: '\uD83D\uDCE1', color: '#ff6633', domain: 'GNSS', src: 'Curated + GDELT' },
-    social:     { label: 'SOCIAL',         icon: '\uD83D\uDCF1', color: '#ff44aa', domain: 'SOCIAL', src: 'Reddit OSINT' },
+    social:     { label: 'SOCIAL',         icon: '\uD83D\uDCF1', color: '#ff44aa', domain: 'SOCIAL', src: 'Reddit + Mastodon OSINT' },
   }
 
   const THREAT_ZONES = [
@@ -85,24 +87,32 @@
   // STATE
   // ═══════════════════════════════════════════════════════════════════════════
   let map = null
-  const entities = []          // CanonicalEvent[]
-  const layerGroups = {}       // layerKey → L.LayerGroup
-  const layerState = {}        // layerKey → boolean (visible)
-  const sourceHealth = {}      // layerKey → 'live'|'error'|'loading'
-  const counts = {}            // layerKey → number
-  let selected = null          // inspected entity
+  const entities = []
+  const layerGroups = {}
+  const layerState = {}
+  const sourceHealth = {}
+  const counts = {}
+  let selected = null
   let searchQuery = ''
   let searchResults = []
   let searchOpen = false
-  let panel = 'layers'         // layers | threat | sources
+  let panel = 'layers'
   let showZones = true
   let cycle = 0
-  let timeline = []            // log entries
+  let timeline = []
   const zoneCircles = []
   const zoneLabels = []
 
+  // Connection health
+  let lastFetchTime = 0
+  let connectionOk = true
+  let nextRefreshAt = 0
+
+  // Time scrubber
+  let scrubberEnabled = false
+  let scrubberHours = 24  // show last N hours
+
   Object.keys(LAYERS).forEach(k => { layerState[k] = true; sourceHealth[k] = 'loading'; counts[k] = 0 })
-  // Off by default
   ;['ships', 'debris'].forEach(k => { layerState[k] = false })
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -122,7 +132,6 @@
     if (e.entity_type?.startsWith('cyber')) { s += 15; reasons.push('Cyber threat') }
     if (e.entity_type?.startsWith('gnss')) { s += 20; reasons.push('GNSS anomaly') }
     if (e.entity_type === 'disaster') { s += (e.severity === 'critical' ? 40 : 15); reasons.push('Disaster') }
-    // Zone proximity
     if (e.lat != null && e.lon != null) {
       for (const z of THREAT_ZONES) {
         const d = haversine(e.lat, e.lon, z.lat, z.lon)
@@ -136,6 +145,17 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // FRESHNESS HELPER
+  // ═══════════════════════════════════════════════════════════════════════════
+  function freshness(ts) {
+    if (!ts) return { label: 'UNKNOWN', cls: 'fresh-old' }
+    const age = Date.now() - new Date(ts).getTime()
+    if (age < 3600000) return { label: Math.round(age / 60000) + 'm AGO', cls: 'fresh-live' }
+    if (age < 86400000) return { label: Math.round(age / 3600000) + 'h AGO', cls: 'fresh-stale' }
+    return { label: Math.round(age / 86400000) + 'd AGO', cls: 'fresh-old' }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // PARSERS — convert upstream responses to canonical events
   // ═══════════════════════════════════════════════════════════════════════════
   function ce(partial) {
@@ -144,7 +164,7 @@
       lat: null, lon: null, altitude: null, velocity: null, heading: null,
       timestamp: new Date().toISOString(), observed_at: new Date().toISOString(),
       confidence: 50, severity: 'info', risk_score: 0, region: '', tags: [],
-      correlations: [], metadata: {}, provenance: 'direct-api'
+      correlations: [], metadata: {}, raw_payload_hash: '', provenance: 'direct-api'
     }, partial)
   }
 
@@ -269,12 +289,11 @@
     return items.slice(0, 50).map((item, i) => {
       const f = item.fields || {}, countries = f.country || []
       const countryName = countries[0]?.name || 'Unknown'
-      // ReliefWeb doesn't provide coordinates — use text geocoding
       const geo = GEO_LITE[countryName.toLowerCase()] || null
       return ce({
         id: 'rw_' + i, entity_type: 'disaster', source: 'ReliefWeb',
         source_url: 'https://reliefweb.int/', title: (f.name || 'Disaster Event').slice(0, 100),
-        description: `${f.primary_type || ''} — ${f.status || ''} — ${countryName}`,
+        description: (f.primary_type || '') + ' \u2014 ' + (f.status || '') + ' \u2014 ' + countryName,
         lat: geo?.lat || null, lon: geo?.lon || null, region: geo?.region || '',
         timestamp: f.date?.created || '', confidence: geo ? 30 : 0,
         severity: (f.status || '') === 'alert' ? 'high' : 'medium',
@@ -290,7 +309,7 @@
     return matches.slice(0, 40).map((m, i) => ce({
       id: 'shodan_' + i, entity_type: 'cyber_intel',
       source: 'Shodan', source_url: 'https://www.shodan.io/',
-      title: `${m.product || 'Service'} on ${m.ip_str || ''}:${m.port || ''}`,
+      title: (m.product || 'Service') + ' on ' + (m.ip_str || '') + ':' + (m.port || ''),
       lat: m.location?.latitude || null, lon: m.location?.longitude || null,
       region: m.location?.country_name || '', confidence: 80, severity: 'medium',
       tags: ['ics', 'scada', m.product || ''].filter(Boolean), provenance: 'direct-api',
@@ -327,9 +346,13 @@
     'haiti': { lat: 18.9, lon: -72.3, region: 'Americas' },
     'nepal': { lat: 28.4, lon: 84.1, region: 'South Asia' },
     'bangladesh': { lat: 23.7, lon: 90.4, region: 'South Asia' },
+    'libya': { lat: 26.3, lon: 17.2, region: 'Africa' },
+    'egypt': { lat: 26.8, lon: 30.8, region: 'Africa' },
+    'south africa': { lat: -30.6, lon: 22.9, region: 'Africa' },
+    'kenya': { lat: -1.3, lon: 36.8, region: 'Africa' },
   }
 
-  // CelesTrak TLE → SGP4 propagation (if satellite.js loaded)
+  // CelesTrak TLE -> SGP4 propagation (if satellite.js loaded)
   function parseCelesTrakTLE(text, type) {
     if (!window.satellite || !text || typeof text !== 'string') return []
     const lines = text.trim().split('\n')
@@ -364,16 +387,16 @@
   }
 
   // Canonical events from backend (already normalized)
-  function passthrough(data, type) {
+  function passthrough(data) {
     if (!data?.events) return []
-    return data.events.map(e => Object.assign(ce({}), e))
+    return data.events.map(function(e) { return Object.assign(ce({}), e) })
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ENTITY MANAGEMENT
   // ═══════════════════════════════════════════════════════════════════════════
   function typeToLayer(et) {
-    const map = {
+    var m = {
       aircraft: 'aircraft', military_air: 'military', iss: 'iss', satellite: 'satellites', debris_object: 'debris',
       seismic: 'seismic', wildfire: 'wildfires', weather: 'weather',
       fishing_vessel: 'fishing', dark_vessel: 'darkships', ship: 'ships',
@@ -382,65 +405,74 @@
       gnss_jamming: 'gnss', gnss_spoofing: 'gnss', gnss_news: 'gnss',
       social_post: 'social',
     }
-    return map[et] || 'conflict'
+    return m[et] || 'conflict'
   }
 
   function replaceEntities(newEntities, prefix) {
-    // Remove old entities matching prefix
-    for (let i = entities.length - 1; i >= 0; i--) {
+    for (var i = entities.length - 1; i >= 0; i--) {
       if (entities[i].id.startsWith(prefix)) entities.splice(i, 1)
     }
-    entities.push(...newEntities)
+    entities.push.apply(entities, newEntities)
     refreshMap()
   }
 
   function refreshCounts() {
-    Object.keys(LAYERS).forEach(k => { counts[k] = 0 })
-    entities.forEach(e => { const l = typeToLayer(e.entity_type); if (counts[l] !== undefined) counts[l]++ })
+    Object.keys(LAYERS).forEach(function(k) { counts[k] = 0 })
+    var cutoff = scrubberEnabled ? Date.now() - scrubberHours * 3600000 : 0
+    entities.forEach(function(e) {
+      if (scrubberEnabled && e.timestamp) {
+        var t = new Date(e.timestamp).getTime()
+        if (t > 0 && t < cutoff) return
+      }
+      var l = typeToLayer(e.entity_type)
+      if (counts[l] !== undefined) counts[l]++
+    })
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // MAP RENDERING
   // ═══════════════════════════════════════════════════════════════════════════
-  const markers = {} // id → L.Marker
-
   function markerIcon(color, size, severity) {
-    const r = size / 2, glow = severity === 'critical' || severity === 'high'
-    const svg = `<svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">${glow ? `<circle cx="${r}" cy="${r}" r="${r}" fill="none" stroke="${color}" stroke-width="0.6" opacity="0.4"/>` : ''}<circle cx="${r}" cy="${r}" r="${r - 1}" fill="${color}" opacity="0.8"/><circle cx="${r}" cy="${r}" r="${size * 0.18}" fill="#e0f0ff" opacity="0.9"/></svg>`
-    return L.divIcon({ html: `<div class="sm${glow ? ' sm-glow' : ''}">${svg}</div>`, className: '', iconSize: [size, size], iconAnchor: [r, r] })
+    var r = size / 2, glow = severity === 'critical' || severity === 'high'
+    var svg = '<svg width="' + size + '" height="' + size + '" xmlns="http://www.w3.org/2000/svg">' + (glow ? '<circle cx="' + r + '" cy="' + r + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="0.6" opacity="0.4"/>' : '') + '<circle cx="' + r + '" cy="' + r + '" r="' + (r - 1) + '" fill="' + color + '" opacity="0.8"/><circle cx="' + r + '" cy="' + r + '" r="' + (size * 0.18) + '" fill="#e0f0ff" opacity="0.9"/></svg>'
+    return L.divIcon({ html: '<div class="sm' + (glow ? ' sm-glow' : '') + '">' + svg + '</div>', className: '', iconSize: [size, size], iconAnchor: [r, r] })
   }
 
   function inferredIcon(color, size) {
-    const r = size / 2
-    const svg = `<svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${r}" cy="${r}" r="${r - 1}" fill="none" stroke="${color}" stroke-width="1.2" stroke-dasharray="3 2" opacity="0.6"/><circle cx="${r}" cy="${r}" r="${size * 0.15}" fill="${color}" opacity="0.5"/></svg>`
-    return L.divIcon({ html: `<div class="sm sm-inferred">${svg}</div>`, className: '', iconSize: [size, size], iconAnchor: [r, r] })
+    var r = size / 2
+    var svg = '<svg width="' + size + '" height="' + size + '" xmlns="http://www.w3.org/2000/svg"><circle cx="' + r + '" cy="' + r + '" r="' + (r - 1) + '" fill="none" stroke="' + color + '" stroke-width="1.2" stroke-dasharray="3 2" opacity="0.6"/><circle cx="' + r + '" cy="' + r + '" r="' + (size * 0.15) + '" fill="' + color + '" opacity="0.5"/></svg>'
+    return L.divIcon({ html: '<div class="sm sm-inferred">' + svg + '</div>', className: '', iconSize: [size, size], iconAnchor: [r, r] })
   }
 
   function refreshMap() {
     if (!map) return
     refreshCounts()
+    Object.values(layerGroups).forEach(function(g) { g.clearLayers() })
 
-    // Clear all layer groups
-    Object.values(layerGroups).forEach(g => g.clearLayers())
+    var cutoff = scrubberEnabled ? Date.now() - scrubberHours * 3600000 : 0
 
-    // Add entities to appropriate layer groups
-    entities.forEach(e => {
+    entities.forEach(function(e) {
       if (e.lat == null || e.lon == null) return
-      const layerKey = typeToLayer(e.entity_type)
-      const cfg = LAYERS[layerKey]
+      var layerKey = typeToLayer(e.entity_type)
+      var cfg = LAYERS[layerKey]
       if (!cfg || !layerGroups[layerKey]) return
 
-      const isInferred = e.provenance === 'geocoded-inferred' || e.provenance === 'no-location'
-      const sz = e.severity === 'critical' ? 14 : e.severity === 'high' ? 11 : 9
-      const icon = isInferred ? inferredIcon(cfg.color, sz) : markerIcon(cfg.color, sz, e.severity)
+      // Time filter
+      if (scrubberEnabled && e.timestamp) {
+        var t = new Date(e.timestamp).getTime()
+        if (t > 0 && t < cutoff) return
+      }
 
-      const m = L.marker([e.lat, e.lon], { icon })
-      m.on('click', () => { selected = e; renderUI() })
+      var isInferred = e.provenance === 'geocoded-inferred' || e.provenance === 'no-location'
+      var sz = e.severity === 'critical' ? 14 : e.severity === 'high' ? 11 : 9
+      var icon = isInferred ? inferredIcon(cfg.color, sz) : markerIcon(cfg.color, sz, e.severity)
 
-      // Tooltip
-      const conf = e.confidence != null ? ` [${e.confidence}%]` : ''
-      const prov = isInferred ? ' (INFERRED)' : ''
-      m.bindTooltip(`<b>${e.title}</b><br><span style="opacity:0.7">${e.source}${conf}${prov}</span>`, { className: 'sentinel-tooltip', direction: 'top', offset: [0, -6] })
+      var m = L.marker([e.lat, e.lon], { icon: icon })
+      m.on('click', function() { selected = e; renderUI() })
+
+      var conf = e.confidence != null ? ' [' + e.confidence + '%]' : ''
+      var prov = isInferred ? ' (INFERRED)' : ''
+      m.bindTooltip('<b>' + e.title + '</b><br><span style="opacity:0.7">' + e.source + conf + prov + '</span>', { className: 'sentinel-tooltip', direction: 'top', offset: [0, -6] })
 
       layerGroups[layerKey].addLayer(m)
     })
@@ -458,23 +490,21 @@
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 18 }).addTo(map)
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 18, opacity: 0.7 }).addTo(map)
 
-    // Threat zones
-    const ztc = { conflict: '#ff2200', chokepoint: '#ff8800', flashpoint: '#ffcc00' }
-    THREAT_ZONES.forEach(z => {
-      const col = ztc[z.type] || '#ff4400'
-      const outer = L.circle([z.lat, z.lon], { radius: z.r * 1000, color: col, weight: 0.6, opacity: 0.3, fillColor: col, fillOpacity: 0.02, dashArray: '5 8', interactive: false }).addTo(map)
-      const label = L.marker([z.lat, z.lon], { icon: L.divIcon({ html: `<div style="color:${col};font-size:7px;font-family:'JetBrains Mono',monospace;white-space:nowrap;opacity:0.5;letter-spacing:1.5px;text-transform:uppercase;pointer-events:none">${z.name}</div>`, className: '', iconAnchor: [0, 0] }), interactive: false, zIndexOffset: -1000 }).addTo(map)
+    var ztc = { conflict: '#ff2200', chokepoint: '#ff8800', flashpoint: '#ffcc00' }
+    THREAT_ZONES.forEach(function(z) {
+      var col = ztc[z.type] || '#ff4400'
+      var outer = L.circle([z.lat, z.lon], { radius: z.r * 1000, color: col, weight: 0.6, opacity: 0.3, fillColor: col, fillOpacity: 0.02, dashArray: '5 8', interactive: false }).addTo(map)
+      var label = L.marker([z.lat, z.lon], { icon: L.divIcon({ html: '<div style="color:' + col + ';font-size:7px;font-family:\'JetBrains Mono\',monospace;white-space:nowrap;opacity:0.5;letter-spacing:1.5px;text-transform:uppercase;pointer-events:none">' + z.name + '</div>', className: '', iconAnchor: [0, 0] }), interactive: false, zIndexOffset: -1000 }).addTo(map)
       zoneCircles.push(outer)
       zoneLabels.push(label)
     })
 
-    // Create layer groups (clustered for dense layers)
-    const CLUSTERED = new Set(['aircraft', 'satellites', 'debris', 'seismic'])
-    Object.keys(LAYERS).forEach(k => {
-      if (CLUSTERED.has(k) && L.MarkerClusterGroup) {
-        const mcg = L.markerClusterGroup({ maxClusterRadius: k === 'seismic' ? 30 : 45, showCoverageOnHover: false, iconCreateFunction: c => {
-          const n = c.getChildCount(), col = LAYERS[k].color, sz = n > 100 ? 30 : n > 30 ? 24 : 20
-          return L.divIcon({ html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${col}18;border:1px solid ${col}55;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono';color:${col};font-size:9px;font-weight:600">${n}</div>`, className: '', iconSize: [sz, sz] })
+    var CLUSTERED = { aircraft: 1, satellites: 1, debris: 1, seismic: 1 }
+    Object.keys(LAYERS).forEach(function(k) {
+      if (CLUSTERED[k] && L.MarkerClusterGroup) {
+        var mcg = L.markerClusterGroup({ maxClusterRadius: k === 'seismic' ? 30 : 45, showCoverageOnHover: false, iconCreateFunction: function(c) {
+          var n = c.getChildCount(), col = LAYERS[k].color, sz = n > 100 ? 30 : n > 30 ? 24 : 20
+          return L.divIcon({ html: '<div style="width:' + sz + 'px;height:' + sz + 'px;border-radius:50%;background:' + col + '18;border:1px solid ' + col + '55;display:flex;align-items:center;justify-content:center;font-family:\'JetBrains Mono\';color:' + col + ';font-size:9px;font-weight:600">' + n + '</div>', className: '', iconSize: [sz, sz] })
         }})
         layerGroups[k] = mcg
       } else {
@@ -496,8 +526,8 @@
 
   function toggleZones() {
     showZones = !showZones
-    zoneCircles.forEach(c => { if (showZones) c.addTo(map); else map.removeLayer(c) })
-    zoneLabels.forEach(l => { if (showZones) l.addTo(map); else map.removeLayer(l) })
+    zoneCircles.forEach(function(c) { if (showZones) c.addTo(map); else map.removeLayer(c) })
+    zoneLabels.forEach(function(l) { if (showZones) l.addTo(map); else map.removeLayer(l) })
     renderUI()
   }
 
@@ -507,8 +537,13 @@
   function doSearch(q) {
     searchQuery = q
     if (!q || q.length < 2) { searchResults = []; return }
-    const lower = q.toLowerCase()
-    searchResults = entities.filter(e => e.title.toLowerCase().includes(lower) || (e.tags || []).some(t => t.toLowerCase().includes(lower)) || (e.region || '').toLowerCase().includes(lower) || (e.source || '').toLowerCase().includes(lower)).slice(0, 15)
+    var lower = q.toLowerCase()
+    searchResults = entities.filter(function(e) {
+      return e.title.toLowerCase().includes(lower) ||
+        (e.tags || []).some(function(t) { return t.toLowerCase().includes(lower) }) ||
+        (e.region || '').toLowerCase().includes(lower) ||
+        (e.source || '').toLowerCase().includes(lower)
+    }).slice(0, 15)
   }
 
   function flyTo(e) {
@@ -523,173 +558,20 @@
   // LOG
   // ═══════════════════════════════════════════════════════════════════════════
   function log(msg, sev) {
-    timeline.unshift({ msg, sev: sev || 'info', time: new Date().toISOString() })
+    timeline.unshift({ msg: msg, sev: sev || 'info', time: new Date().toISOString() })
     if (timeline.length > 100) timeline.length = 100
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // DATA FETCH — phased loading
-  // ═══════════════════════════════════════════════════════════════════════════
-  let fetching = false
-
-  async function fetchAll() {
-    if (fetching) return
-    fetching = true; cycle++
-    log('Fetch cycle ' + cycle + ' starting', 'info')
-
-    // Phase 1: Fast free sources
-    try {
-      const [oskyR, usgsR, issR] = await Promise.allSettled([
-        proxy('opensky'), fetch(DIRECT.USGS).then(r => r.json()), fetch(DIRECT.ISS).then(r => r.json())
-      ])
-      if (oskyR.status === 'fulfilled' && !isErr(oskyR.value)) {
-        const parsed = parseOpenSky(oskyR.value)
-        replaceEntities(parsed.filter(e => e.entity_type === 'aircraft'), 'ac_')
-        replaceEntities(parsed.filter(e => e.entity_type === 'military_air'), 'mil_')
-        sourceHealth.aircraft = 'live'; sourceHealth.military = 'live'
-        log('Aircraft: ' + parsed.length + ' tracked', 'info')
-      } else { sourceHealth.aircraft = 'error'; sourceHealth.military = 'error' }
-
-      if (usgsR.status === 'fulfilled') { replaceEntities(parseUSGS(usgsR.value), 'eq_'); sourceHealth.seismic = 'live'; log('Seismic: ' + counts.seismic, 'info') }
-      else { sourceHealth.seismic = 'error' }
-
-      if (issR.status === 'fulfilled') { replaceEntities(parseISS(issR.value), 'iss_'); sourceHealth.iss = 'live' }
-      else { sourceHealth.iss = 'error' }
-    } catch (e) { log('Phase 1 error: ' + e, 'error') }
-
-    // Phase 2: Keyed sources (proxied)
-    try {
-      const [firmsR, n2yoR, owmR] = await Promise.allSettled([
-        proxy('firms'), proxy('n2yo'), getApi('/api/weather/global')
-      ])
-      if (firmsR.status === 'fulfilled' && typeof firmsR.value === 'string') { replaceEntities(parseFIRMS(firmsR.value), 'fire_'); sourceHealth.wildfires = 'live'; log('Wildfires: ' + counts.wildfires, 'info') }
-      else { sourceHealth.wildfires = 'error' }
-
-      if (n2yoR.status === 'fulfilled' && !isErr(n2yoR.value)) { replaceEntities(parseN2YO(n2yoR.value), 'sat_'); sourceHealth.satellites = 'live' }
-      else { sourceHealth.satellites = 'error' }
-
-      if (owmR.status === 'fulfilled' && !isErr(owmR.value)) { replaceEntities(parseOWM(owmR.value), 'wx_'); sourceHealth.weather = 'live' }
-      else { sourceHealth.weather = 'error' }
-    } catch (e) { log('Phase 2 error: ' + e, 'error') }
-
-    // Phase 3: Slower feeds
-    try {
-      const [gdacsR, gfwFishR, gfwGapR, rwR] = await Promise.allSettled([
-        proxy('gdacs'), proxy('gfw_fishing', datePair()), proxy('gfw_gap', datePair()),
-        getApi('/api/reliefweb/disasters')
-      ])
-      if (gdacsR.status === 'fulfilled' && !isErr(gdacsR.value)) { replaceEntities(parseGDACS(gdacsR.value), 'gdacs_'); sourceHealth.disasters = 'live' }
-      else { sourceHealth.disasters = 'error' }
-
-      if (rwR.status === 'fulfilled' && !isErr(rwR.value)) {
-        const rwEvents = parseReliefWeb(rwR.value)
-        replaceEntities(rwEvents, 'rw_')
-        if (sourceHealth.disasters !== 'live') sourceHealth.disasters = rwEvents.length > 0 ? 'live' : 'error'
-        log('ReliefWeb: ' + rwEvents.length + ' disasters', 'info')
-      }
-
-      if (gfwFishR.status === 'fulfilled' && !isErr(gfwFishR.value)) { replaceEntities(parseGFW(gfwFishR.value, 'fish'), 'fish_'); sourceHealth.fishing = 'live' }
-      else { sourceHealth.fishing = 'error' }
-
-      if (gfwGapR.status === 'fulfilled' && !isErr(gfwGapR.value)) { replaceEntities(parseGFW(gfwGapR.value, 'dark'), 'gap_'); sourceHealth.darkships = 'live' }
-      else { sourceHealth.darkships = 'error' }
-    } catch (e) { log('Phase 3 error: ' + e, 'error') }
-
-    // Phase 4: Intel
-    try {
-      const [conflictR, cyberR, nuclearR] = await Promise.allSettled([
-        postApi('/api/intel/gdelt', { category: 'conflict' }),
-        postApi('/api/intel/gdelt', { category: 'cyber' }),
-        postApi('/api/intel/gdelt', { category: 'nuclear' })
-      ])
-      if (conflictR.status === 'fulfilled') { replaceEntities(passthrough(conflictR.value), 'gdelt_conflict_'); sourceHealth.conflict = 'live' }
-      else { sourceHealth.conflict = 'error' }
-
-      if (cyberR.status === 'fulfilled') { const evts = passthrough(cyberR.value); replaceEntities(evts, 'gdelt_cyber_') }
-
-      if (nuclearR.status === 'fulfilled') { replaceEntities(passthrough(nuclearR.value), 'gdelt_nuclear_'); sourceHealth.nuclear = 'live' }
-      else { sourceHealth.nuclear = 'error' }
-    } catch (e) { log('Phase 4 error: ' + e, 'error') }
-
-    // Phase 5: Cyber feeds
-    setTimeout(async () => {
-      try {
-        const [kevR, otxR, urlR, tfR] = await Promise.allSettled([
-          getApi('/api/cyber/cisa-kev'), getApi('/api/cyber/otx'), getApi('/api/cyber/urlhaus'), getApi('/api/cyber/threatfox')
-        ])
-        let cyberCount = 0
-        if (kevR.status === 'fulfilled' && kevR.value?.events) { replaceEntities(kevR.value.events.map(e => ce(e)), 'kev_'); cyberCount += kevR.value.count || 0 }
-        if (otxR.status === 'fulfilled' && otxR.value?.events) { replaceEntities(otxR.value.events.map(e => ce(e)), 'otx_'); cyberCount += otxR.value.count || 0 }
-        if (urlR.status === 'fulfilled' && urlR.value?.events) { replaceEntities(urlR.value.events.map(e => ce(e)), 'urlhaus_'); cyberCount += urlR.value.count || 0 }
-        if (tfR.status === 'fulfilled' && tfR.value?.events) { replaceEntities(tfR.value.events.map(e => ce(e)), 'threatfox_'); cyberCount += tfR.value.count || 0 }
-        sourceHealth.cyber = cyberCount > 0 ? 'live' : 'error'
-        log('Cyber feeds: ' + cyberCount + ' indicators', 'info')
-      } catch (e) { sourceHealth.cyber = 'error'; log('Cyber fetch error: ' + e, 'error') }
-    }, 2000)
-
-    // Phase 6: GNSS + Social
-    setTimeout(async () => {
-      try {
-        const [gnssR, socialR] = await Promise.allSettled([getApi('/api/gnss/anomalies'), getApi('/api/social/reddit')])
-        if (gnssR.status === 'fulfilled' && gnssR.value?.events) {
-          replaceEntities(gnssR.value.events.map(e => ce(e)), 'gnss_')
-          sourceHealth.gnss = 'live'
-          log('GNSS: ' + (gnssR.value.zones || 0) + ' zones, ' + (gnssR.value.news || 0) + ' news', 'info')
-        } else { sourceHealth.gnss = 'error' }
-
-        if (socialR.status === 'fulfilled' && socialR.value?.events) {
-          replaceEntities(socialR.value.events.map(e => ce(e)), 'reddit_')
-          sourceHealth.social = 'live'
-          log('Social: ' + socialR.value.total + ' posts, ' + socialR.value.geolocated + ' geolocated', 'info')
-        } else { sourceHealth.social = 'error' }
-      } catch (e) { log('Phase 6 error: ' + e, 'error') }
-    }, 4000)
-
-    fetching = false
-    refreshMap()
-    log('Cycle ' + cycle + ' complete \u2014 ' + entities.length + ' entities', 'info')
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // CELESTRAK TLE FETCH
-  // ═══════════════════════════════════════════════════════════════════════════
-  const TLE_URLS = {
-    stations: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle',
-    debris_fengyun: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=1999-025&FORMAT=tle',
-    military: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=military&FORMAT=tle',
-  }
-
-  async function fetchCelesTrak() {
-    if (!window.satellite) { log('satellite.js not loaded — skipping TLE propagation', 'info'); return }
-    try {
-      const [stR, debR] = await Promise.allSettled([
-        fetch(TLE_URLS.stations).then(r => r.ok ? r.text() : ''),
-        fetch(TLE_URLS.debris_fengyun).then(r => r.ok ? r.text() : ''),
-      ])
-      let satCount = 0
-      if (stR.status === 'fulfilled' && stR.value) {
-        const parsed = parseCelesTrakTLE(stR.value, 'satellite')
-        replaceEntities(parsed, 'tle_'); satCount += parsed.length
-      }
-      if (debR.status === 'fulfilled' && debR.value) {
-        const parsed = parseCelesTrakTLE(debR.value, 'debris')
-        replaceEntities(parsed, 'deb_'); satCount += parsed.length
-        sourceHealth.debris = 'live'
-      }
-      if (satCount > 0) log('CelesTrak SGP4: ' + satCount + ' objects propagated', 'info')
-    } catch (e) { log('CelesTrak error: ' + e, 'error') }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // SATELLITE IMAGERY ENGINE — NASA GIBS + EOX Sentinel-2
   // ═══════════════════════════════════════════════════════════════════════════
-  let showSatPanel = false
-  let satDate = ''
-  let activeSatLayer = null
-  let satTileLayer = null
-  let satLabelLayer = null
+  var showSatPanel = false
+  var satDate = ''
+  var activeSatLayer = null
+  var satTileLayer = null
+  var satLabelLayer = null
 
-  const SAT_PRODUCTS = {
+  var SAT_PRODUCTS = {
     modis_terra: { label: 'MODIS Terra', sub: 'True Color', layer: 'MODIS_Terra_CorrectedReflectance_TrueColor', matrixSet: 'GoogleMapsCompatible_Level9', format: 'jpg', maxZoom: 9, daily: true, desc: '250 m/px daily' },
     modis_aqua: { label: 'MODIS Aqua', sub: 'True Color', layer: 'MODIS_Aqua_CorrectedReflectance_TrueColor', matrixSet: 'GoogleMapsCompatible_Level9', format: 'jpg', maxZoom: 9, daily: true, desc: '250 m/px afternoon pass' },
     viirs_snpp: { label: 'VIIRS SNPP', sub: 'True Color', layer: 'VIIRS_SNPP_CorrectedReflectance_TrueColor', matrixSet: 'GoogleMapsCompatible_Level9', format: 'jpg', maxZoom: 9, daily: true, desc: '250 m/px daily' },
@@ -697,100 +579,106 @@
     sentinel2: { label: 'Sentinel-2', sub: 'Cloudless 2024', tileUrl: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857_512/default/GoogleMapsCompatible_Level15/{z}/{y}/{x}.jpg', maxZoom: 15, daily: false, desc: '10 m/px annual mosaic' },
   }
 
-  function initSatDate() {
-    const d = new Date(Date.now() - 86400000)
-    satDate = d.toISOString().split('T')[0]
-  }
+  function initSatDate() { var d = new Date(Date.now() - 86400000); satDate = d.toISOString().split('T')[0] }
   initSatDate()
 
-  function buildGIBSUrl(key) {
-    const p = SAT_PRODUCTS[key]
-    if (!p || p.tileUrl) return null
-    return `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${p.layer}/default/${satDate}/${p.matrixSet}/{z}/{y}/{x}.${p.format}`
-  }
+  function buildGIBSUrl(key) { var p = SAT_PRODUCTS[key]; if (!p || p.tileUrl) return null; return 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/' + p.layer + '/default/' + satDate + '/' + p.matrixSet + '/{z}/{y}/{x}.' + p.format }
 
   function applySatelliteLayer(key) {
     if (!map) return
     if (satTileLayer) { map.removeLayer(satTileLayer); satTileLayer = null }
     if (satLabelLayer) { map.removeLayer(satLabelLayer); satLabelLayer = null }
     if (key === 'none' || !key) { activeSatLayer = null; renderUI(); return }
-    const p = SAT_PRODUCTS[key]
-    if (!p) return
-    const url = p.tileUrl || buildGIBSUrl(key)
-    if (!url) return
+    var p = SAT_PRODUCTS[key]; if (!p) return
+    var url = p.tileUrl || buildGIBSUrl(key); if (!url) return
     activeSatLayer = key
     satTileLayer = L.tileLayer(url, { maxZoom: p.maxZoom || 9, opacity: 0.92, attribution: '' })
-    satTileLayer.addTo(map)
-    satTileLayer.setZIndex(50)
-    // Dark labels over imagery
+    satTileLayer.addTo(map); satTileLayer.setZIndex(50)
     satLabelLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 18, opacity: 0.7 })
-    satLabelLayer.addTo(map)
-    satLabelLayer.setZIndex(51)
+    satLabelLayer.addTo(map); satLabelLayer.setZIndex(51)
     log('Satellite: ' + p.label + (p.daily ? ' (' + satDate + ')' : ''), 'info')
     renderUI()
   }
 
-  function changeSatDate(newDate) {
-    if (newDate && /^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
-      satDate = newDate
-      if (activeSatLayer) applySatelliteLayer(activeSatLayer)
-    }
-  }
+  function changeSatDate(newDate) { if (newDate && /^\d{4}-\d{2}-\d{2}$/.test(newDate)) { satDate = newDate; if (activeSatLayer) applySatelliteLayer(activeSatLayer) } }
 
   function datePair() {
-    const end = new Date().toISOString().split('T')[0]
-    const start = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
+    var end = new Date().toISOString().split('T')[0]
+    var start = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
     return { startDate: start, endDate: end }
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // HTML ESCAPE HELPER
+  // ═══════════════════════════════════════════════════════════════════════════
+  function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // UI RENDERING
   // ═══════════════════════════════════════════════════════════════════════════
   function renderUI() {
     refreshCounts()
-    const total = Object.values(counts).reduce((a, b) => a + b, 0)
-    const threatBoard = entities.map(e => ({ entity: e, ...scoreThreat(e) })).filter(t => t.score >= 10).sort((a, b) => b.score - a.score).slice(0, 40)
-    const critCount = threatBoard.filter(t => t.level === 'CRITICAL').length
-    const highCount = threatBoard.filter(t => t.level === 'HIGH').length
-    const now = new Date(), pad = v => String(v).padStart(2, '0')
-    const clock = pad(now.getUTCHours()) + ':' + pad(now.getUTCMinutes()) + ':' + pad(now.getUTCSeconds()) + 'Z'
+    var total = Object.values(counts).reduce(function(a, b) { return a + b }, 0)
+    var threatBoard = entities.map(function(e) { return Object.assign({ entity: e }, scoreThreat(e)) }).filter(function(t) { return t.score >= 10 }).sort(function(a, b) { return b.score - a.score }).slice(0, 40)
+    var critCount = threatBoard.filter(function(t) { return t.level === 'CRITICAL' }).length
+    var highCount = threatBoard.filter(function(t) { return t.level === 'HIGH' }).length
+    var now = new Date()
+    function pad(v) { return String(v).padStart(2, '0') }
+    var clock = pad(now.getUTCHours()) + ':' + pad(now.getUTCMinutes()) + ':' + pad(now.getUTCSeconds()) + 'Z'
 
-    let h = ''
+    // Connection health
+    var connClass = connectionOk ? 'conn-ok' : 'conn-err'
+    var secToRefresh = Math.max(0, Math.round((nextRefreshAt - Date.now()) / 1000))
 
-    // ── HEADER ──
+    var h = ''
+
+    // -- HEADER --
     h += '<div class="hdr"><div class="hdr-left">'
-    h += '<div class="hdr-dot"></div>'
+    h += '<div class="hdr-dot ' + connClass + '"></div>'
     h += '<span class="hdr-title">SENTINEL</span>'
     h += '<span class="hdr-sub">GLOBAL SITUATIONAL AWARENESS</span>'
-    h += `<span class="hdr-btn${showZones ? ' active' : ''}" onclick="S._toggleZones()">ZONES</span>`
-    if (critCount > 0) h += `<span class="hdr-alert" onclick="S._setPanel('threat')">${critCount} CRIT</span>`
+    h += '<span class="hdr-btn' + (showZones ? ' active' : '') + '" onclick="S._toggleZones()">ZONES</span>'
+    if (critCount > 0) h += '<span class="hdr-alert" onclick="S._setPanel(\'threat\')">' + critCount + ' CRIT</span>'
     h += '</div><div class="hdr-right">'
-    h += `<span class="hdr-clock">${clock}</span>`
-    h += `<span class="hdr-total">${total.toLocaleString()}</span>`
-    h += `<span class="hdr-btn${activeSatLayer ? ' active' : ''}" onclick="S._toggleSat()">SAT</span>`
+    h += '<span class="hdr-clock">' + clock + '</span>'
+    h += '<span class="hdr-total">' + total.toLocaleString() + '</span>'
+    h += '<span class="hdr-btn' + (activeSatLayer ? ' active' : '') + '" onclick="S._toggleSat()">SAT</span>'
+    h += '<span class="hdr-btn' + (scrubberEnabled ? ' active' : '') + '" onclick="S._toggleScrub()">TIME</span>'
     h += '</div></div>'
 
-    h += '<div class="classif">UNCLASSIFIED // OPEN SOURCE INTELLIGENCE</div>'
+    h += '<div class="classif">UNCLASSIFIED // OPEN SOURCE INTELLIGENCE'
+    if (cycle > 0) h += ' // CYCLE ' + cycle + ' // REFRESH ' + secToRefresh + 's'
+    h += '</div>'
 
-    // ── SATELLITE IMAGERY PANEL ──
+    // -- TIME SCRUBBER --
+    if (scrubberEnabled) {
+      h += '<div class="scrubber">'
+      h += '<span class="scrub-label">TIME FILTER</span>'
+      h += '<input type="range" class="scrub-range" min="1" max="72" value="' + scrubberHours + '" oninput="S._scrubChange(this.value)">'
+      h += '<span class="scrub-val">LAST ' + scrubberHours + 'h</span>'
+      h += '<span class="scrub-close" onclick="S._toggleScrub()">X</span>'
+      h += '</div>'
+    }
+
+    // -- SATELLITE IMAGERY PANEL --
     if (showSatPanel) {
       h += '<div class="hud-sat-panel">'
       h += '<div style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--brd)">'
       h += '<span style="font-size:8px;letter-spacing:2px;color:var(--cyan)">SATELLITE IMAGERY</span>'
       h += '<span style="cursor:pointer;color:var(--t3);font-size:10px" onclick="S._toggleSat()">X</span></div>'
-      // Date picker
       h += '<div style="padding:6px 12px;display:flex;align-items:center;gap:6px;border-bottom:1px solid var(--brd)">'
       h += '<span style="cursor:pointer;font-size:10px;color:var(--t3)" onclick="S._satDatePrev()">&#9664;</span>'
-      h += `<input type="date" value="${satDate}" onchange="S._satDateChange(this.value)" style="flex:1;background:var(--bg1);border:1px solid var(--brd);color:var(--t1);font-family:var(--mono);font-size:9px;padding:3px 6px;border-radius:2px">`
+      h += '<input type="date" value="' + satDate + '" onchange="S._satDateChange(this.value)" style="flex:1;background:var(--bg1);border:1px solid var(--brd);color:var(--t1);font-family:var(--mono);font-size:9px;padding:3px 6px;border-radius:2px">'
       h += '<span style="cursor:pointer;font-size:10px;color:var(--t3)" onclick="S._satDateNext()">&#9654;</span>'
       h += '<span style="cursor:pointer;font-size:7px;color:var(--cyan);letter-spacing:1px" onclick="S._satDateYesterday()">YESTERDAY</span>'
       h += '</div>'
       h += '<div style="padding:4px 0">'
-      h += `<div class="sat-row${!activeSatLayer ? ' sat-active' : ''}" onclick="S._applySat('none')"><span style="font-size:8px;color:var(--t2)">DEFAULT MAP (Off)</span></div>`
-      Object.entries(SAT_PRODUCTS).forEach(([key, p]) => {
-        h += `<div class="sat-row${activeSatLayer === key ? ' sat-active' : ''}" onclick="S._applySat('${key}')">`
-        h += `<div style="font-size:8px;color:var(--t1)">${p.label} <span style="color:var(--t3);font-size:7px">${p.sub}</span></div>`
-        h += `<div style="font-size:6.5px;color:var(--t3);margin-top:1px">${p.desc} <span style="color:${p.daily ? 'var(--green)' : 'var(--cyan)'};letter-spacing:1px">${p.daily ? 'DAILY' : 'STATIC'}</span></div>`
+      h += '<div class="sat-row' + (!activeSatLayer ? ' sat-active' : '') + '" onclick="S._applySat(\'none\')"><span style="font-size:8px;color:var(--t2)">DEFAULT MAP (Off)</span></div>'
+      Object.entries(SAT_PRODUCTS).forEach(function(entry) {
+        var key = entry[0], p = entry[1]
+        h += '<div class="sat-row' + (activeSatLayer === key ? ' sat-active' : '') + '" onclick="S._applySat(\'' + key + '\')">'
+        h += '<div style="font-size:8px;color:var(--t1)">' + p.label + ' <span style="color:var(--t3);font-size:7px">' + p.sub + '</span></div>'
+        h += '<div style="font-size:6.5px;color:var(--t3);margin-top:1px">' + p.desc + ' <span style="color:' + (p.daily ? 'var(--green)' : 'var(--cyan)') + ';letter-spacing:1px">' + (p.daily ? 'DAILY' : 'STATIC') + '</span></div>'
         h += '</div>'
       })
       h += '</div>'
@@ -798,156 +686,156 @@
       h += '<a href="https://gibs.earthdata.nasa.gov/" target="_blank" style="color:var(--t3);text-decoration:none">NASA GIBS</a>'
       h += ' \u00B7 <a href="https://worldview.earthdata.nasa.gov/" target="_blank" style="color:var(--t3);text-decoration:none">Worldview</a>'
       h += ' \u00B7 <a href="https://s2maps.eu/" target="_blank" style="color:var(--t3);text-decoration:none">EOX S2</a>'
-      h += ' \u00B7 Press S to toggle</div>'
-      h += '</div>'
+      h += ' \u00B7 Press S to toggle</div></div>'
     }
 
-    // ── SATELLITE ACTIVE INDICATOR ──
+    // -- SAT INDICATOR --
     if (activeSatLayer) {
-      const p = SAT_PRODUCTS[activeSatLayer]
+      var p = SAT_PRODUCTS[activeSatLayer]
       h += '<div class="hud-sat-indicator" onclick="S._toggleSat()">'
-      h += `<span style="font-size:7px;color:var(--cyan);letter-spacing:1px">\uD83D\uDEF0 ${p?.label || ''}</span>`
-      if (p?.daily) h += `<span style="font-size:7px;color:var(--t3)">${satDate}</span>`
+      h += '<span style="font-size:7px;color:var(--cyan);letter-spacing:1px">\uD83D\uDEF0 ' + (p?.label || '') + '</span>'
+      if (p?.daily) h += '<span style="font-size:7px;color:var(--t3)">' + satDate + '</span>'
       h += '<span style="font-size:7px;color:var(--red);cursor:pointer" onclick="event.stopPropagation();S._applySat(\'none\')">X OFF</span>'
       h += '</div>'
     }
 
-    // ── SEARCH ──
+    // -- SEARCH --
     h += '<div class="search-wrap">'
-    h += `<input class="search-input" type="text" placeholder="Search entities, tags, regions..." value="${searchQuery}" oninput="S._search(this.value)" onfocus="S._searchFocus()" onblur="setTimeout(()=>S._searchBlur(),200)">`
+    h += '<input class="search-input" type="text" placeholder="Search entities, tags, regions..." value="' + esc(searchQuery) + '" oninput="S._search(this.value)" onfocus="S._searchFocus()" onblur="setTimeout(function(){S._searchBlur()},200)">'
     if (searchOpen && searchResults.length > 0) {
       h += '<div class="search-results">'
-      searchResults.forEach((e, i) => {
-        const col = LAYERS[typeToLayer(e.entity_type)]?.color || '#fff'
-        h += `<div class="search-item" onclick="S._searchSelect(${i})"><span class="dot" style="background:${col}"></span><span class="search-title">${e.title.slice(0, 60)}</span><span class="search-src">${e.source}</span></div>`
+      searchResults.forEach(function(e, i) {
+        var col = LAYERS[typeToLayer(e.entity_type)]?.color || '#fff'
+        h += '<div class="search-item" onclick="S._searchSelect(' + i + ')"><span class="dot" style="background:' + col + '"></span><span class="search-title">' + esc(e.title).slice(0, 60) + '</span><span class="search-src">' + esc(e.source) + '</span></div>'
       })
       h += '</div>'
     }
     h += '</div>'
 
-    // ── LEFT PANEL ──
+    // -- LEFT PANEL --
     h += '<div class="lp"><div class="tabs">'
-    ;[['layers', 'LAYERS'], ['threat', 'THREAT ' + critCount], ['sources', 'SOURCES']].forEach(([id, label]) => {
-      h += `<div class="tab${panel === id ? ' active' : ''}" onclick="S._setPanel('${id}')">${label}</div>`
+    ;[['layers', 'LAYERS'], ['threat', 'THREAT ' + critCount], ['sources', 'SOURCES']].forEach(function(pair) {
+      h += '<div class="tab' + (panel === pair[0] ? ' active' : '') + '" onclick="S._setPanel(\'' + pair[0] + '\')">' + pair[1] + '</div>'
     })
     h += '</div><div class="lp-body">'
 
     if (panel === 'layers') {
-      let currentDomain = ''
-      Object.entries(LAYERS).forEach(([k, cfg]) => {
-        if (cfg.domain !== currentDomain) { currentDomain = cfg.domain; h += `<div class="domain-hdr">${currentDomain}</div>` }
-        const on = layerState[k], st = sourceHealth[k]
-        const dotCol = st === 'live' ? '#00ff88' : st === 'error' ? '#ff3355' : '#ffaa00'
-        h += `<div class="layer-row${on ? '' : ' off'}" onclick="S._toggle('${k}')">`
-        h += `<span class="dot" style="background:${on ? cfg.color : '#0a1520'}"></span>`
-        h += `<span class="layer-label">${cfg.icon} ${cfg.label}</span>`
-        h += `<span class="layer-count" style="color:${cfg.color}">${counts[k] || 0}</span>`
-        h += `<span class="dot-sm" style="background:${dotCol}"></span>`
-        h += `<span class="layer-status">${st === 'live' ? 'LIVE' : st === 'error' ? 'ERR' : 'LOAD'}</span>`
+      var currentDomain = ''
+      Object.entries(LAYERS).forEach(function(entry) {
+        var k = entry[0], cfg = entry[1]
+        if (cfg.domain !== currentDomain) { currentDomain = cfg.domain; h += '<div class="domain-hdr">' + currentDomain + '</div>' }
+        var on = layerState[k], st = sourceHealth[k]
+        var dotCol = st === 'live' ? '#00ff88' : st === 'error' ? '#ff3355' : '#ffaa00'
+        h += '<div class="layer-row' + (on ? '' : ' off') + '" onclick="S._toggle(\'' + k + '\')">'
+        h += '<span class="dot" style="background:' + (on ? cfg.color : '#0a1520') + '"></span>'
+        h += '<span class="layer-label">' + cfg.icon + ' ' + cfg.label + '</span>'
+        h += '<span class="layer-count" style="color:' + cfg.color + '">' + (counts[k] || 0) + '</span>'
+        h += '<span class="dot-sm" style="background:' + dotCol + '"></span>'
+        h += '<span class="layer-status">' + (st === 'live' ? 'LIVE' : st === 'error' ? 'ERR' : 'LOAD') + '</span>'
         h += '</div>'
       })
     }
 
     if (panel === 'threat') {
       h += '<div class="threat-summary">'
-      h += `<div class="threat-stat"><span class="threat-num" style="color:#ff0033">${critCount}</span><span class="threat-lbl">CRIT</span></div>`
-      h += `<div class="threat-stat"><span class="threat-num" style="color:#ff7700">${highCount}</span><span class="threat-lbl">HIGH</span></div>`
-      const gi = Math.min(100, Math.round(critCount * 12 + highCount * 5))
-      h += `<div class="threat-bar"><div class="threat-fill" style="width:${gi}%;background:${gi >= 75 ? '#ff0033' : gi >= 50 ? '#ff7700' : '#ffcc00'}"></div></div>`
+      h += '<div class="threat-stat"><span class="threat-num" style="color:#ff0033">' + critCount + '</span><span class="threat-lbl">CRIT</span></div>'
+      h += '<div class="threat-stat"><span class="threat-num" style="color:#ff7700">' + highCount + '</span><span class="threat-lbl">HIGH</span></div>'
+      var gi = Math.min(100, Math.round(critCount * 12 + highCount * 5))
+      h += '<div class="threat-bar"><div class="threat-fill" style="width:' + gi + '%;background:' + (gi >= 75 ? '#ff0033' : gi >= 50 ? '#ff7700' : '#ffcc00') + '"></div></div>'
       h += '</div>'
-      threatBoard.forEach(t => {
-        h += `<div class="threat-item${t.level === 'CRITICAL' ? ' t-crit' : t.level === 'HIGH' ? ' t-high' : ''}" onclick="S._flyTo('${t.entity.id}')">`
-        h += `<span class="threat-name">${t.entity.title.slice(0, 50)}</span>`
-        h += `<span class="threat-score" style="color:${t.col}">${t.score}</span>`
-        if (t.reasons[0]) h += `<div class="threat-reason">${t.reasons[0]}</div>`
+      threatBoard.forEach(function(t) {
+        h += '<div class="threat-item' + (t.level === 'CRITICAL' ? ' t-crit' : t.level === 'HIGH' ? ' t-high' : '') + '" onclick="S._flyTo(\'' + t.entity.id + '\')">'
+        h += '<span class="threat-name">' + esc(t.entity.title).slice(0, 50) + '</span>'
+        h += '<span class="threat-score" style="color:' + t.col + '">' + t.score + '</span>'
+        if (t.reasons[0]) h += '<div class="threat-reason">' + esc(t.reasons[0]) + '</div>'
         h += '</div>'
       })
     }
 
     if (panel === 'sources') {
       h += '<div class="domain-hdr">SOURCE HEALTH</div>'
-      Object.entries(LAYERS).forEach(([k, cfg]) => {
-        const st = sourceHealth[k]
-        h += `<div class="src-row"><span class="layer-label">${cfg.label}</span><span class="src-badge ${st}">${st.toUpperCase()}</span><span class="src-detail">${cfg.src}</span></div>`
+      Object.entries(LAYERS).forEach(function(entry) {
+        var k = entry[0], cfg = entry[1], st = sourceHealth[k]
+        h += '<div class="src-row"><span class="layer-label">' + cfg.label + '</span><span class="src-badge ' + st + '">' + st.toUpperCase() + '</span><span class="src-detail">' + cfg.src + '</span></div>'
       })
       h += '<div class="domain-hdr" style="margin-top:8px">TIMELINE</div>'
-      timeline.slice(0, 20).forEach(t => {
-        h += `<div class="log-row"><span class="log-time">${t.time.slice(11, 19)}</span><span class="log-msg">${t.msg}</span></div>`
+      timeline.slice(0, 20).forEach(function(t) {
+        h += '<div class="log-row"><span class="log-time">' + t.time.slice(11, 19) + '</span><span class="log-msg">' + esc(t.msg) + '</span></div>'
       })
     }
 
     h += '</div></div>'
 
-    // ── INSPECTOR ──
+    // -- INSPECTOR --
     if (selected) {
-      const e = selected, t = scoreThreat(e)
-      const isInf = e.provenance === 'geocoded-inferred'
+      var e = selected, t = scoreThreat(e)
+      var isInf = e.provenance === 'geocoded-inferred'
+      var fr = freshness(e.timestamp)
       h += '<div class="rp"><div class="rp-header">'
-      h += `<span class="rp-title">${e.title.slice(0, 80)}</span>`
-      h += `<span class="rp-close" onclick="S._closeInspector()">X</span></div>`
+      h += '<span class="rp-title">' + esc(e.title).slice(0, 80) + '</span>'
+      h += '<span class="rp-close" onclick="S._closeInspector()">X</span></div>'
 
-      // Meta badges
       h += '<div class="rp-badges">'
-      h += `<span class="badge" style="background:${t.col}22;color:${t.col}">${t.level} ${t.score}</span>`
-      h += `<span class="badge conf">${e.confidence}% CONF</span>`
+      h += '<span class="badge" style="background:' + t.col + '22;color:' + t.col + '">' + t.level + ' ' + t.score + '</span>'
+      h += '<span class="badge conf">' + e.confidence + '% CONF</span>'
+      h += '<span class="badge ' + fr.cls + '">' + fr.label + '</span>'
       if (isInf) h += '<span class="badge inferred">INFERRED LOC</span>'
-      h += `<span class="badge prov">${e.provenance}</span>`
-      if (e.severity !== 'info') h += `<span class="badge sev-${e.severity}">${e.severity.toUpperCase()}</span>`
+      h += '<span class="badge prov">' + esc(e.provenance) + '</span>'
+      if (e.severity !== 'info') h += '<span class="badge sev-' + e.severity + '">' + e.severity.toUpperCase() + '</span>'
       h += '</div>'
 
-      // Source
-      h += `<div class="rp-field"><span class="rp-key">SOURCE</span><span class="rp-val">${e.source}</span></div>`
-      if (e.source_url) h += `<div class="rp-field"><span class="rp-key">URL</span><a href="${e.source_url}" target="_blank" class="rp-link">${e.source_url.slice(0, 60)}</a></div>`
-      h += `<div class="rp-field"><span class="rp-key">TIMESTAMP</span><span class="rp-val">${e.timestamp}</span></div>`
-      if (e.lat != null) h += `<div class="rp-field"><span class="rp-key">POSITION</span><span class="rp-val">${e.lat.toFixed(4)}, ${e.lon.toFixed(4)}${isInf ? ' (inferred)' : ''}</span></div>`
-      if (e.altitude != null) h += `<div class="rp-field"><span class="rp-key">ALTITUDE</span><span class="rp-val">${e.altitude.toLocaleString()} ft</span></div>`
-      if (e.velocity != null) h += `<div class="rp-field"><span class="rp-key">VELOCITY</span><span class="rp-val">${e.velocity} kts</span></div>`
-      if (e.region) h += `<div class="rp-field"><span class="rp-key">REGION</span><span class="rp-val">${e.region}</span></div>`
-      if (e.description) h += `<div class="rp-field"><span class="rp-key">DESC</span><span class="rp-val">${e.description.slice(0, 200)}</span></div>`
-      if (e.tags?.length > 0) h += `<div class="rp-field"><span class="rp-key">TAGS</span><span class="rp-val">${e.tags.join(', ')}</span></div>`
+      h += '<div class="rp-field"><span class="rp-key">SOURCE</span><span class="rp-val">' + esc(e.source) + '</span></div>'
+      if (e.source_url) h += '<div class="rp-field"><span class="rp-key">URL</span><a href="' + esc(e.source_url) + '" target="_blank" class="rp-link">' + esc(e.source_url).slice(0, 60) + '</a></div>'
+      h += '<div class="rp-field"><span class="rp-key">TIMESTAMP</span><span class="rp-val">' + esc(e.timestamp) + '</span></div>'
+      if (e.lat != null) h += '<div class="rp-field"><span class="rp-key">POSITION</span><span class="rp-val">' + e.lat.toFixed(4) + ', ' + e.lon.toFixed(4) + (isInf ? ' (inferred)' : '') + '</span></div>'
+      if (e.altitude != null) h += '<div class="rp-field"><span class="rp-key">ALTITUDE</span><span class="rp-val">' + e.altitude.toLocaleString() + ' ft</span></div>'
+      if (e.velocity != null) h += '<div class="rp-field"><span class="rp-key">VELOCITY</span><span class="rp-val">' + e.velocity + ' kts</span></div>'
+      if (e.region) h += '<div class="rp-field"><span class="rp-key">REGION</span><span class="rp-val">' + esc(e.region) + '</span></div>'
+      if (e.description) h += '<div class="rp-field"><span class="rp-key">DESC</span><span class="rp-val">' + esc(e.description).slice(0, 200) + '</span></div>'
+      if (e.tags?.length > 0) h += '<div class="rp-field"><span class="rp-key">TAGS</span><span class="rp-val">' + e.tags.map(esc).join(', ') + '</span></div>'
+      if (e.raw_payload_hash) h += '<div class="rp-field"><span class="rp-key">HASH</span><span class="rp-val mono">' + esc(e.raw_payload_hash) + '</span></div>'
 
-      // Cyber-specific card
+      // Cyber card
       if (e.entity_type.startsWith('cyber_')) {
-        h += '<div class="rp-card cyber-card">'
-        h += '<div class="card-header">CYBER INTELLIGENCE</div>'
-        if (e.metadata?.cve_id) h += `<div class="rp-field"><span class="rp-key">CVE</span><span class="rp-val">${e.metadata.cve_id}</span></div>`
-        if (e.metadata?.vendor) h += `<div class="rp-field"><span class="rp-key">VENDOR</span><span class="rp-val">${e.metadata.vendor}</span></div>`
-        if (e.metadata?.product) h += `<div class="rp-field"><span class="rp-key">PRODUCT</span><span class="rp-val">${e.metadata.product}</span></div>`
-        if (e.metadata?.malware) h += `<div class="rp-field"><span class="rp-key">MALWARE</span><span class="rp-val">${e.metadata.malware}</span></div>`
-        if (e.metadata?.ioc_value) h += `<div class="rp-field"><span class="rp-key">IOC</span><span class="rp-val mono">${e.metadata.ioc_value}</span></div>`
-        if (e.metadata?.known_ransomware) h += `<div class="rp-field"><span class="rp-key">RANSOMWARE</span><span class="rp-val">${e.metadata.known_ransomware}</span></div>`
-        if (e.metadata?.adversary) h += `<div class="rp-field"><span class="rp-key">ADVERSARY</span><span class="rp-val">${e.metadata.adversary}</span></div>`
+        h += '<div class="rp-card cyber-card"><div class="card-header">CYBER INTELLIGENCE</div>'
+        if (e.metadata?.cve_id) h += '<div class="rp-field"><span class="rp-key">CVE</span><span class="rp-val">' + esc(e.metadata.cve_id) + '</span></div>'
+        if (e.metadata?.vendor) h += '<div class="rp-field"><span class="rp-key">VENDOR</span><span class="rp-val">' + esc(e.metadata.vendor) + '</span></div>'
+        if (e.metadata?.product) h += '<div class="rp-field"><span class="rp-key">PRODUCT</span><span class="rp-val">' + esc(e.metadata.product) + '</span></div>'
+        if (e.metadata?.malware) h += '<div class="rp-field"><span class="rp-key">MALWARE</span><span class="rp-val">' + esc(e.metadata.malware) + '</span></div>'
+        if (e.metadata?.ioc_value) h += '<div class="rp-field"><span class="rp-key">IOC</span><span class="rp-val mono">' + esc(e.metadata.ioc_value) + '</span></div>'
+        if (e.metadata?.known_ransomware) h += '<div class="rp-field"><span class="rp-key">RANSOMWARE</span><span class="rp-val">' + esc(e.metadata.known_ransomware) + '</span></div>'
+        if (e.metadata?.adversary) h += '<div class="rp-field"><span class="rp-key">ADVERSARY</span><span class="rp-val">' + esc(e.metadata.adversary) + '</span></div>'
         h += '</div>'
       }
 
       // GNSS card
       if (e.entity_type.startsWith('gnss_')) {
-        h += '<div class="rp-card gnss-card">'
-        h += '<div class="card-header">GNSS ANOMALY</div>'
-        if (e.metadata?.type) h += `<div class="rp-field"><span class="rp-key">TYPE</span><span class="rp-val">${e.metadata.type}</span></div>`
-        if (e.metadata?.radius_km) h += `<div class="rp-field"><span class="rp-key">RADIUS</span><span class="rp-val">${e.metadata.radius_km} km</span></div>`
-        if (e.metadata?.affected_systems) h += `<div class="rp-field"><span class="rp-key">AFFECTED</span><span class="rp-val">${e.metadata.affected_systems}</span></div>`
+        h += '<div class="rp-card gnss-card"><div class="card-header">GNSS ANOMALY</div>'
+        if (e.metadata?.type) h += '<div class="rp-field"><span class="rp-key">TYPE</span><span class="rp-val">' + esc(e.metadata.type) + '</span></div>'
+        if (e.metadata?.radius_km) h += '<div class="rp-field"><span class="rp-key">RADIUS</span><span class="rp-val">' + e.metadata.radius_km + ' km</span></div>'
+        if (e.metadata?.affected_systems) h += '<div class="rp-field"><span class="rp-key">AFFECTED</span><span class="rp-val">' + esc(e.metadata.affected_systems) + '</span></div>'
         h += '</div>'
       }
 
       // Social card
       if (e.entity_type === 'social_post') {
-        h += '<div class="rp-card social-card">'
-        h += '<div class="card-header">SOCIAL INTELLIGENCE</div>'
-        if (e.metadata?.subreddit) h += `<div class="rp-field"><span class="rp-key">SUB</span><span class="rp-val">r/${e.metadata.subreddit}</span></div>`
-        h += `<div class="rp-field"><span class="rp-key">SCORE</span><span class="rp-val">${e.metadata?.score || 0} | ${e.metadata?.num_comments || 0} comments</span></div>`
-        if (e.metadata?.media_url) h += `<div class="rp-field"><span class="rp-key">MEDIA</span><a href="${e.metadata.media_url}" target="_blank" class="rp-link">${e.metadata.media_type}: ${e.metadata.media_url.slice(0, 50)}</a></div>`
-        if (e.metadata?.geolocation_method) h += `<div class="rp-field"><span class="rp-key">GEO METHOD</span><span class="rp-val">${e.metadata.geolocation_method}${e.metadata?.matched_location ? ' (' + e.metadata.matched_location + ')' : ''}</span></div>`
-        if (e.source_url) h += `<div class="rp-field"><a href="${e.source_url}" target="_blank" class="rp-link">View on Reddit \u2192</a></div>`
+        h += '<div class="rp-card social-card"><div class="card-header">SOCIAL INTELLIGENCE</div>'
+        if (e.metadata?.subreddit) h += '<div class="rp-field"><span class="rp-key">SUB</span><span class="rp-val">r/' + esc(e.metadata.subreddit) + '</span></div>'
+        if (e.metadata?.instance) h += '<div class="rp-field"><span class="rp-key">INSTANCE</span><span class="rp-val">' + esc(e.metadata.instance) + '</span></div>'
+        h += '<div class="rp-field"><span class="rp-key">SCORE</span><span class="rp-val">' + (e.metadata?.score || e.metadata?.favourites || 0) + ' | ' + (e.metadata?.num_comments || e.metadata?.reblogs || 0) + ' interactions</span></div>'
+        if (e.metadata?.media_url) h += '<div class="rp-field"><span class="rp-key">MEDIA</span><a href="' + esc(e.metadata.media_url) + '" target="_blank" class="rp-link">' + esc(e.metadata.media_type || 'media') + ': ' + esc(e.metadata.media_url).slice(0, 50) + '</a></div>'
+        if (e.metadata?.geolocation_method) h += '<div class="rp-field"><span class="rp-key">GEO METHOD</span><span class="rp-val">' + esc(e.metadata.geolocation_method) + (e.metadata?.matched_location ? ' (' + esc(e.metadata.matched_location) + ')' : '') + '</span></div>'
+        if (e.source_url) h += '<div class="rp-field"><a href="' + esc(e.source_url) + '" target="_blank" class="rp-link">View Source \u2192</a></div>'
         h += '</div>'
       }
 
-      // Metadata dump
+      // Raw metadata
       if (e.metadata && Object.keys(e.metadata).length > 0) {
         h += '<div class="rp-meta-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">RAW METADATA \u25BC</div>'
         h += '<div class="rp-meta" style="display:none">'
-        Object.entries(e.metadata).forEach(([k, v]) => {
-          if (v != null && v !== '') h += `<div class="rp-field"><span class="rp-key">${k}</span><span class="rp-val mono">${typeof v === 'object' ? JSON.stringify(v) : String(v).slice(0, 200)}</span></div>`
+        Object.entries(e.metadata).forEach(function(pair) {
+          var k = pair[0], v = pair[1]
+          if (v != null && v !== '') h += '<div class="rp-field"><span class="rp-key">' + esc(k) + '</span><span class="rp-val mono">' + esc(typeof v === 'object' ? JSON.stringify(v) : String(v)).slice(0, 200) + '</span></div>'
         })
         h += '</div>'
       }
@@ -955,9 +843,9 @@
       h += '</div>'
     }
 
-    // ── STATS RING ──
+    // -- STATS RING --
     h += '<div class="stats-ring">'
-    const statItems = [
+    var statItems = [
       ['AIR', (counts.aircraft || 0) + (counts.military || 0), '#00ccff'],
       ['SEA', (counts.fishing || 0) + (counts.darkships || 0) + (counts.ships || 0), '#00ff88'],
       ['ORB', (counts.satellites || 0) + (counts.debris || 0), '#ffcc00'],
@@ -967,41 +855,205 @@
       ['GPS', counts.gnss || 0, '#ff6633'],
       ['SOC', counts.social || 0, '#ff44aa'],
     ]
-    statItems.forEach(([l, c, col]) => {
-      h += `<div class="stat"><span class="stat-lbl" style="color:${col}88">${l}</span><span class="stat-val" style="color:${col}">${c}</span></div>`
+    statItems.forEach(function(item) {
+      h += '<div class="stat"><span class="stat-lbl" style="color:' + item[2] + '88">' + item[0] + '</span><span class="stat-val" style="color:' + item[2] + '">' + item[1] + '</span></div>'
     })
-    h += `<div class="stat total"><span class="stat-val">${total.toLocaleString()}</span></div>`
+    h += '<div class="stat total"><span class="stat-val">' + total.toLocaleString() + '</span></div>'
     h += '</div>'
 
-    // ── MOBILE BAR ──
+    // -- MOBILE BAR --
     h += '<div class="mob-bar">'
-    ;[['layers', 'LAYERS'], ['threat', 'THREAT'], ['sources', 'LOGS']].forEach(([id, l]) => {
-      h += `<div class="mob-tab${panel === id ? ' active' : ''}" onclick="S._setPanel('${id}')">${l}</div>`
+    ;[['layers', 'LAYERS'], ['threat', 'THREAT'], ['sources', 'LOGS']].forEach(function(pair) {
+      h += '<div class="mob-tab' + (panel === pair[0] ? ' active' : '') + '" onclick="S._setPanel(\'' + pair[0] + '\')">' + pair[1] + '</div>'
     })
     h += '</div>'
 
     document.getElementById('hud').innerHTML = h
 
-    // Remove loading screen on first render
-    const loadEl = document.getElementById('loading')
+    var loadEl = document.getElementById('loading')
     if (loadEl) loadEl.style.display = 'none'
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DATA FETCH — phased loading
+  // ═══════════════════════════════════════════════════════════════════════════
+  var fetching = false
+
+  async function fetchAll() {
+    if (fetching) return
+    fetching = true; cycle++
+    lastFetchTime = Date.now()
+    nextRefreshAt = Date.now() + 60000
+    log('Fetch cycle ' + cycle + ' starting', 'info')
+
+    // Phase 1: Fast free sources
+    try {
+      var p1 = await Promise.allSettled([
+        proxy('opensky'), fetch(DIRECT.USGS).then(function(r) { return r.json() }), fetch(DIRECT.ISS).then(function(r) { return r.json() })
+      ])
+      if (p1[0].status === 'fulfilled' && !isErr(p1[0].value)) {
+        var parsed = parseOpenSky(p1[0].value)
+        replaceEntities(parsed.filter(function(e) { return e.entity_type === 'aircraft' }), 'ac_')
+        replaceEntities(parsed.filter(function(e) { return e.entity_type === 'military_air' }), 'mil_')
+        sourceHealth.aircraft = 'live'; sourceHealth.military = 'live'
+        log('Aircraft: ' + parsed.length + ' tracked', 'info')
+      } else { sourceHealth.aircraft = 'error'; sourceHealth.military = 'error' }
+
+      if (p1[1].status === 'fulfilled') { replaceEntities(parseUSGS(p1[1].value), 'eq_'); sourceHealth.seismic = 'live'; log('Seismic: ' + counts.seismic, 'info') }
+      else { sourceHealth.seismic = 'error' }
+
+      if (p1[2].status === 'fulfilled') { replaceEntities(parseISS(p1[2].value), 'iss_'); sourceHealth.iss = 'live' }
+      else { sourceHealth.iss = 'error' }
+    } catch (e) { log('Phase 1 error: ' + e, 'error') }
+
+    // Phase 2: Keyed sources (proxied)
+    try {
+      var p2 = await Promise.allSettled([
+        proxy('firms'), proxy('n2yo'), getApi('/api/weather/global')
+      ])
+      if (p2[0].status === 'fulfilled' && typeof p2[0].value === 'string') { replaceEntities(parseFIRMS(p2[0].value), 'fire_'); sourceHealth.wildfires = 'live'; log('Wildfires: ' + counts.wildfires, 'info') }
+      else { sourceHealth.wildfires = 'error' }
+
+      if (p2[1].status === 'fulfilled' && !isErr(p2[1].value)) { replaceEntities(parseN2YO(p2[1].value), 'sat_'); sourceHealth.satellites = 'live' }
+      else { sourceHealth.satellites = 'error' }
+
+      if (p2[2].status === 'fulfilled' && !isErr(p2[2].value)) { replaceEntities(parseOWM(p2[2].value), 'wx_'); sourceHealth.weather = 'live' }
+      else { sourceHealth.weather = 'error' }
+    } catch (e) { log('Phase 2 error: ' + e, 'error') }
+
+    // Phase 3: Slower feeds
+    try {
+      var p3 = await Promise.allSettled([
+        proxy('gdacs'), proxy('gfw_fishing', datePair()), proxy('gfw_gap', datePair()),
+        getApi('/api/reliefweb/disasters')
+      ])
+      if (p3[0].status === 'fulfilled' && !isErr(p3[0].value)) { replaceEntities(parseGDACS(p3[0].value), 'gdacs_'); sourceHealth.disasters = 'live' }
+      else { sourceHealth.disasters = 'error' }
+
+      if (p3[3].status === 'fulfilled' && !isErr(p3[3].value)) {
+        var rwEvents = parseReliefWeb(p3[3].value)
+        replaceEntities(rwEvents, 'rw_')
+        if (sourceHealth.disasters !== 'live') sourceHealth.disasters = rwEvents.length > 0 ? 'live' : 'error'
+        log('ReliefWeb: ' + rwEvents.length + ' disasters', 'info')
+      }
+
+      if (p3[1].status === 'fulfilled' && !isErr(p3[1].value)) { replaceEntities(parseGFW(p3[1].value, 'fish'), 'fish_'); sourceHealth.fishing = 'live' }
+      else { sourceHealth.fishing = 'error' }
+
+      if (p3[2].status === 'fulfilled' && !isErr(p3[2].value)) { replaceEntities(parseGFW(p3[2].value, 'dark'), 'gap_'); sourceHealth.darkships = 'live' }
+      else { sourceHealth.darkships = 'error' }
+    } catch (e) { log('Phase 3 error: ' + e, 'error') }
+
+    // Phase 4: Intel
+    try {
+      var p4 = await Promise.allSettled([
+        postApi('/api/intel/gdelt', { category: 'conflict' }),
+        postApi('/api/intel/gdelt', { category: 'cyber' }),
+        postApi('/api/intel/gdelt', { category: 'nuclear' })
+      ])
+      if (p4[0].status === 'fulfilled') { replaceEntities(passthrough(p4[0].value), 'gdelt_conflict_'); sourceHealth.conflict = 'live' }
+      else { sourceHealth.conflict = 'error' }
+      if (p4[1].status === 'fulfilled') { replaceEntities(passthrough(p4[1].value), 'gdelt_cyber_') }
+      if (p4[2].status === 'fulfilled') { replaceEntities(passthrough(p4[2].value), 'gdelt_nuclear_'); sourceHealth.nuclear = 'live' }
+      else { sourceHealth.nuclear = 'error' }
+    } catch (e) { log('Phase 4 error: ' + e, 'error') }
+
+    // Phase 5: Cyber feeds (delayed)
+    setTimeout(async function() {
+      try {
+        var p5 = await Promise.allSettled([
+          getApi('/api/cyber/cisa-kev'), getApi('/api/cyber/otx'), getApi('/api/cyber/urlhaus'), getApi('/api/cyber/threatfox')
+        ])
+        var cyberCount = 0
+        if (p5[0].status === 'fulfilled' && p5[0].value?.events) { replaceEntities(p5[0].value.events.map(function(e) { return ce(e) }), 'kev_'); cyberCount += p5[0].value.count || 0 }
+        if (p5[1].status === 'fulfilled' && p5[1].value?.events) { replaceEntities(p5[1].value.events.map(function(e) { return ce(e) }), 'otx_'); cyberCount += p5[1].value.count || 0 }
+        if (p5[2].status === 'fulfilled' && p5[2].value?.events) { replaceEntities(p5[2].value.events.map(function(e) { return ce(e) }), 'urlhaus_'); cyberCount += p5[2].value.count || 0 }
+        if (p5[3].status === 'fulfilled' && p5[3].value?.events) { replaceEntities(p5[3].value.events.map(function(e) { return ce(e) }), 'threatfox_'); cyberCount += p5[3].value.count || 0 }
+        sourceHealth.cyber = cyberCount > 0 ? 'live' : 'error'
+        log('Cyber feeds: ' + cyberCount + ' indicators', 'info')
+      } catch (e) { sourceHealth.cyber = 'error'; log('Cyber fetch error: ' + e, 'error') }
+    }, 2000)
+
+    // Phase 6: GNSS + Social (including Mastodon)
+    setTimeout(async function() {
+      try {
+        var p6 = await Promise.allSettled([
+          getApi('/api/gnss/anomalies'),
+          getApi('/api/social/reddit'),
+          getApi('/api/social/mastodon')
+        ])
+        if (p6[0].status === 'fulfilled' && p6[0].value?.events) {
+          replaceEntities(p6[0].value.events.map(function(e) { return ce(e) }), 'gnss_')
+          sourceHealth.gnss = 'live'
+          log('GNSS: ' + (p6[0].value.zones || 0) + ' zones, ' + (p6[0].value.news || 0) + ' news', 'info')
+        } else { sourceHealth.gnss = 'error' }
+
+        var socialTotal = 0
+        if (p6[1].status === 'fulfilled' && p6[1].value?.events) {
+          replaceEntities(p6[1].value.events.map(function(e) { return ce(e) }), 'reddit_')
+          socialTotal += p6[1].value.total || 0
+          log('Reddit: ' + p6[1].value.total + ' posts, ' + p6[1].value.geolocated + ' geolocated', 'info')
+        }
+        if (p6[2].status === 'fulfilled' && p6[2].value?.events) {
+          replaceEntities(p6[2].value.events.map(function(e) { return ce(e) }), 'masto_')
+          socialTotal += p6[2].value.total || 0
+          log('Mastodon: ' + p6[2].value.total + ' posts', 'info')
+        }
+        sourceHealth.social = socialTotal > 0 ? 'live' : 'error'
+      } catch (e) { log('Phase 6 error: ' + e, 'error') }
+    }, 4000)
+
+    connectionOk = true
+    fetching = false
+    refreshMap()
+    log('Cycle ' + cycle + ' complete \u2014 ' + entities.length + ' entities', 'info')
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CELESTRAK TLE FETCH
+  // ═══════════════════════════════════════════════════════════════════════════
+  var TLE_URLS = {
+    stations: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle',
+    debris_fengyun: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=1999-025&FORMAT=tle',
+  }
+
+  async function fetchCelesTrak() {
+    if (!window.satellite) { log('satellite.js not loaded \u2014 skipping TLE propagation', 'info'); return }
+    try {
+      var results = await Promise.allSettled([
+        fetch(TLE_URLS.stations).then(function(r) { return r.ok ? r.text() : '' }),
+        fetch(TLE_URLS.debris_fengyun).then(function(r) { return r.ok ? r.text() : '' }),
+      ])
+      var satCount = 0
+      if (results[0].status === 'fulfilled' && results[0].value) {
+        var parsed = parseCelesTrakTLE(results[0].value, 'satellite')
+        replaceEntities(parsed, 'tle_'); satCount += parsed.length
+      }
+      if (results[1].status === 'fulfilled' && results[1].value) {
+        var parsed2 = parseCelesTrakTLE(results[1].value, 'debris')
+        replaceEntities(parsed2, 'deb_'); satCount += parsed2.length
+        sourceHealth.debris = 'live'
+      }
+      if (satCount > 0) log('CelesTrak SGP4: ' + satCount + ' objects propagated', 'info')
+    } catch (e) { log('CelesTrak error: ' + e, 'error') }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // KEYBOARD
   // ═══════════════════════════════════════════════════════════════════════════
   function initKeyboard() {
-    document.addEventListener('keydown', e => {
+    document.addEventListener('keydown', function(e) {
       if (e.target.tagName === 'INPUT') return
-      const k = e.key.toLowerCase()
+      var k = e.key.toLowerCase()
       if (k === 'escape') { selected = null; searchOpen = false; searchQuery = ''; searchResults = []; renderUI() }
       else if (k === '1') { panel = 'layers'; renderUI() }
       else if (k === '2') { panel = 'threat'; renderUI() }
       else if (k === '3') { panel = 'sources'; renderUI() }
       else if (k === 'z') { toggleZones() }
       else if (k === 's') { showSatPanel = !showSatPanel; renderUI() }
+      else if (k === 't') { scrubberEnabled = !scrubberEnabled; refreshMap() }
       else if (k === 'r') { fetchAll() }
-      else if (k === '/' || k === 'f') { e.preventDefault(); const inp = document.querySelector('.search-input'); if (inp) inp.focus() }
+      else if (k === '/' || k === 'f') { e.preventDefault(); var inp = document.querySelector('.search-input'); if (inp) inp.focus() }
     })
   }
 
@@ -1011,40 +1063,51 @@
   window.S = {
     _toggle: toggleLayer,
     _toggleZones: toggleZones,
-    _setPanel: p => { panel = p; renderUI() },
-    _flyTo: id => { const e = entities.find(x => x.id === id); if (e) flyTo(e) },
-    _closeInspector: () => { selected = null; renderUI() },
-    _search: q => { doSearch(q); renderUI() },
-    _searchFocus: () => { searchOpen = true; renderUI() },
-    _searchBlur: () => { searchOpen = false; renderUI() },
-    _searchSelect: i => { if (searchResults[i]) { flyTo(searchResults[i]); searchOpen = false; searchQuery = ''; searchResults = []; renderUI() } },
-    // Satellite imagery handlers
-    _toggleSat: () => { showSatPanel = !showSatPanel; renderUI() },
-    _applySat: key => { applySatelliteLayer(key) },
-    _satDatePrev: () => { const d = new Date(satDate); d.setDate(d.getDate() - 1); changeSatDate(d.toISOString().split('T')[0]); renderUI() },
-    _satDateNext: () => { const d = new Date(satDate); d.setDate(d.getDate() + 1); changeSatDate(d.toISOString().split('T')[0]); renderUI() },
-    _satDateChange: v => { changeSatDate(v); renderUI() },
-    _satDateYesterday: () => { initSatDate(); if (activeSatLayer) applySatelliteLayer(activeSatLayer); renderUI() },
+    _setPanel: function(p) { panel = p; renderUI() },
+    _flyTo: function(id) { var e = entities.find(function(x) { return x.id === id }); if (e) flyTo(e) },
+    _closeInspector: function() { selected = null; renderUI() },
+    _search: function(q) { doSearch(q); renderUI() },
+    _searchFocus: function() { searchOpen = true; renderUI() },
+    _searchBlur: function() { searchOpen = false; renderUI() },
+    _searchSelect: function(i) { if (searchResults[i]) { flyTo(searchResults[i]); searchOpen = false; searchQuery = ''; searchResults = []; renderUI() } },
+    _toggleSat: function() { showSatPanel = !showSatPanel; renderUI() },
+    _applySat: function(key) { applySatelliteLayer(key) },
+    _satDatePrev: function() { var d = new Date(satDate); d.setDate(d.getDate() - 1); changeSatDate(d.toISOString().split('T')[0]); renderUI() },
+    _satDateNext: function() { var d = new Date(satDate); d.setDate(d.getDate() + 1); changeSatDate(d.toISOString().split('T')[0]); renderUI() },
+    _satDateChange: function(v) { changeSatDate(v); renderUI() },
+    _satDateYesterday: function() { initSatDate(); if (activeSatLayer) applySatelliteLayer(activeSatLayer); renderUI() },
+    _toggleScrub: function() { scrubberEnabled = !scrubberEnabled; refreshMap() },
+    _scrubChange: function(v) { scrubberHours = parseInt(v) || 24; refreshMap() },
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CONNECTION HEALTH MONITOR
+  // ═══════════════════════════════════════════════════════════════════════════
+  function checkHealth() {
+    if (lastFetchTime > 0 && (Date.now() - lastFetchTime) > 120000) {
+      connectionOk = false
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // BOOT
   // ═══════════════════════════════════════════════════════════════════════════
   function boot() {
-    console.log('%c SENTINEL OS v6.1 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px')
-    console.log('Global Situational Awareness Platform — 20+ live OSINT layers')
+    console.log('%c SENTINEL OS v7.0 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px')
+    console.log('Global Situational Awareness Platform \u2014 20+ live OSINT layers')
     initMap()
     initKeyboard()
     renderUI()
-    log('SENTINEL OS v6.1 initialized', 'info')
+    log('SENTINEL OS v7.0 initialized', 'info')
     fetchAll()
-    // CelesTrak TLE propagation (delayed — non-critical)
     setTimeout(fetchCelesTrak, 3000)
-    // Periodic refresh
     setInterval(fetchAll, 60000)
-    setInterval(fetchCelesTrak, 180000) // Refresh TLEs every 3 min
-    setInterval(() => { const issE = entities.find(e => e.id === 'iss_live'); if (issE) { fetch(DIRECT.ISS).then(r => r.json()).then(d => { if (d?.latitude != null) { replaceEntities(parseISS(d), 'iss_') } }).catch(() => {}) } }, 5000)
-    setInterval(renderUI, 3000)
+    setInterval(fetchCelesTrak, 180000)
+    setInterval(function() {
+      var issE = entities.find(function(e) { return e.id === 'iss_live' })
+      if (issE) { fetch(DIRECT.ISS).then(function(r) { return r.json() }).then(function(d) { if (d?.latitude != null) { replaceEntities(parseISS(d), 'iss_') } }).catch(function() {}) }
+    }, 5000)
+    setInterval(function() { checkHealth(); renderUI() }, 3000)
   }
 
   boot()
