@@ -34,7 +34,7 @@ type Bindings = {
 const app = new Hono<{ Bindings: Bindings }>()
 app.use('/api/*', cors())
 
-const VERSION = '7.0.0'
+const VERSION = '8.0.0'
 const UA = `SENTINEL-OS/${VERSION} (OSINT Platform)`
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -962,6 +962,83 @@ app.get('/api/fusion/viewport', (c) => {
     z.lat >= latMin && z.lat <= latMax && z.lon >= lonMin && z.lon <= lonMax
   )
   return c.json({ zones: visible, total: FUSION_ZONES.length, visible: visible.length })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOURCE-HEALTH METRICS (v8.0)
+// Tracks per-source latency, uptime, error rates for UI display
+// ═══════════════════════════════════════════════════════════════════════════════
+const sourceMetricsStore: Record<string, {
+  latency_ms: number
+  uptime_pct: number
+  last_success: string
+  error_count: number
+  total_requests: number
+  last_status: 'live' | 'error' | 'loading'
+}> = {}
+
+function recordMetric(source: string, latencyMs: number, success: boolean) {
+  if (!sourceMetricsStore[source]) {
+    sourceMetricsStore[source] = { latency_ms: 0, uptime_pct: 100, last_success: '', error_count: 0, total_requests: 0, last_status: 'loading' }
+  }
+  const m = sourceMetricsStore[source]
+  m.total_requests++
+  // Exponential moving average for latency
+  m.latency_ms = m.latency_ms === 0 ? latencyMs : Math.round(m.latency_ms * 0.7 + latencyMs * 0.3)
+  if (success) {
+    m.last_success = new Date().toISOString()
+    m.last_status = 'live'
+  } else {
+    m.error_count++
+    m.last_status = 'error'
+  }
+  m.uptime_pct = m.total_requests > 0 ? Math.round((1 - m.error_count / m.total_requests) * 100) : 100
+}
+
+app.get('/api/metrics/health', (c) => {
+  const sources: Record<string, unknown> = {}
+  // Map layer keys to metric entries
+  const layerSources: Record<string, string[]> = {
+    aircraft: ['opensky'], military: ['opensky', 'military'],
+    ships: ['aisstream'], darkships: ['gfw_gap'], fishing: ['gfw_fishing'],
+    iss: ['iss'], satellites: ['n2yo', 'celestrak'], debris: ['celestrak'],
+    seismic: ['usgs'], wildfires: ['firms'], weather: ['owm'],
+    conflict: ['gdelt_conflict', 'acled'], disasters: ['gdacs', 'reliefweb'],
+    nuclear: ['gdelt_nuclear'], cyber: ['cisa_kev', 'otx', 'urlhaus', 'threatfox'],
+    gnss: ['gnss'], social: ['reddit', 'mastodon'],
+  }
+
+  for (const [layerKey, srcKeys] of Object.entries(layerSources)) {
+    // Aggregate metrics from all sub-sources
+    let totalLatency = 0, totalUptime = 0, totalErrors = 0, count = 0
+    let lastSuccess = '', lastStatus: 'live' | 'error' | 'loading' = 'loading'
+    for (const sk of srcKeys) {
+      const m = sourceMetricsStore[sk]
+      if (m) {
+        totalLatency += m.latency_ms
+        totalUptime += m.uptime_pct
+        totalErrors += m.error_count
+        if (m.last_success > lastSuccess) lastSuccess = m.last_success
+        if (m.last_status === 'live') lastStatus = 'live'
+        else if (m.last_status === 'error' && lastStatus !== 'live') lastStatus = 'error'
+        count++
+      }
+    }
+    sources[layerKey] = {
+      latency_ms: count > 0 ? Math.round(totalLatency / count) : 0,
+      uptime_pct: count > 0 ? Math.round(totalUptime / count) : 0,
+      last_success: lastSuccess,
+      error_count: totalErrors,
+      status: lastStatus,
+    }
+  }
+
+  return c.json({
+    version: VERSION,
+    timestamp: new Date().toISOString(),
+    sources,
+    total_sources: Object.keys(sourceMetricsStore).length,
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
