@@ -1,4 +1,4 @@
-# SENTINEL OS v8.0
+# SENTINEL OS v8.1
 
 ## Global Multi-Domain Situational Awareness Platform
 
@@ -17,18 +17,18 @@ Production-grade, free-source-first situational awareness system aggregating **2
 Browser (sentinel.js)
   |
   |--- Direct free APIs (USGS, ISS, CelesTrak TLE)
-  |--- /api/proxy  --> Hono BFF --> Upstream keyed APIs
+  |--- /api/proxy  --> Hono BFF --> Upstream keyed APIs (with recordMetric)
   |--- /api/cyber/* --> CISA KEV, OTX, URLhaus, ThreatFox
   |--- /api/gnss/*  --> Curated GNSS zones + GDELT enrichment
   |--- /api/social/* --> Reddit public JSON + Mastodon public timelines
   |--- /api/intel/*  --> GDELT article geocoding
   |--- /api/fusion/* --> Threat zones, viewport queries
   |--- /api/avwx/*  --> METAR weather (canonical events)
-  |--- /api/metrics/health --> Source health metrics (v8.0)
+  |--- /api/metrics/health --> Source health metrics (wired to all fetches)
   |
   Leaflet map + SVG markers + MarkerCluster
   Inspector panel (compact cards with expand) + Threat board
-  Domain-specific filter tabs + Search + Timeline replay
+  Domain-specific filter tabs + Search + Timestamp-aware replay
   Satellite imagery (NASA GIBS + Sentinel-2)
   Mobile drawer panels + Performance throttles
 ```
@@ -44,69 +44,68 @@ Browser (sentinel.js)
 - **No frontend secrets**: The browser never receives, stores, or transmits any API key
 - **Deduplication**: Fingerprint-based dedup with cross-source correlation tracking
 - **Mobile-first**: Responsive drawer panels, performance throttles, marker caps
+- **Unified state**: Single `state` object tracks all map, UI, drawer, replay, viewport, and entity data
 
-## v8.0 Improvements
+## v8.1 Changes (from v8.0)
 
-### 1. Responsive Layout
-- Mobile-first CSS with proper viewport scaling
-- No overflow or content leaks on small screens
-- CSS custom properties (`--lp-w`, `--rp-w`, `--hdr-h`) for consistent sizing
-- Fixed `html/body` to `position:fixed` to prevent mobile scroll bounce
+### Unified State Object
+- All scattered variables consolidated into `state = {...}` with documented fields
+- Includes map instance, entities, layer states, drawer state, replay window, source health/freshness, viewport bounds, mobile mode flags
+- Exposed as `window.S._state` for debugging
 
-### 2. Mobile Drawer Panels
-- Left panel slides in as a drawer from the left edge on mobile (`<768px`)
-- Semi-transparent backdrop overlay (`drawer-overlay`) dims background
-- Hamburger menu button in header to toggle drawer open/close
-- Mobile bottom bar tabs open drawer with panel pre-selected
-- Drawer closes on backdrop tap or Escape key
+### Timestamp-Aware Timeline Replay
+- **Mode-based** instead of slider: LIVE / 1 HOUR / 24 HOURS / 72 HOURS pill buttons
+- `entityInTimeWindow()` filters entities by actual `timestamp` against replay cursor
+- Replay sweeps a window from start to present in ~200 steps at configurable speed (1x/2x/4x)
+- Progress bar shows percentage completion; auto-stops at present
+- Graceful degradation: entities with no timestamp always pass through
 
-### 3. Compact Event Cards
-- Inspector shows compact summary line (source, region, coordinates) by default
-- "SHOW DETAILS" / "COLLAPSE DETAILS" toggle reveals full field list
-- Reduces visual noise; user drills in only when interested
-- Domain-specific cards (Cyber, GNSS, Social) still render inside expandable
+### Viewport-Based Layer Culling
+- `updateViewportBounds()` tracks map bounds on `moveend`/`zoomend`
+- `isInViewport()` culls markers outside visible area (+5deg padding) on mobile
+- Entities sorted by severity before rendering (critical/high first)
 
-### 4. Domain-Specific Layer Tabs
-- Horizontal scrollable pill tabs: ALL, AIR, SEA, SPACE, WEATHER, CONFLICT, CYBER, GNSS, SOCIAL
-- Filters the layer list to show only matching domain
-- Touch-friendly horizontal scroll on mobile
-- Active tab highlighted with cyan border
+### Deferred Heavy Layers on Mobile
+- Phase 3 (GDACS, GFW, ReliefWeb) deferred by 1s on mobile
+- Phase 4 (GDELT intel) deferred by 1.5s on mobile
+- Phase 5 (Cyber) deferred by 3s on mobile
+- Phase 6 (GNSS + Social) deferred by 5s on mobile
+- Desktop gets standard 0s/0s/2s/4s phasing
 
-### 5. Confidence / Freshness Chips
-- Inline colored chips in inspector badges row
-- **Confidence chip**: `conf-high` (green, >=80%), `conf-med` (amber, 50-79%), `conf-low` (red, <50%)
-- **Freshness chip**: `fresh-live` (green, <1h), `fresh-stale` (amber, 1-24h), `fresh-old` (grey, >24h)
-- Compact rounded pill design (8px border-radius)
+### Domain-Distinct Inspector Cards
+- **Air card**: callsign, ICAO24, origin country, squawk (with code meaning), vertical rate
+- **Seismic card**: magnitude, depth, tsunami status, felt reports
+- **Cyber card**: CVE, vendor, product, malware, IOC, ransomware, APT
+- **GNSS card**: jamming/spoofing type, radius, affected systems
+- **Social card**: subreddit/instance, score, geo-inference method
+- Domain color accent on inspector header left border
 
-### 6. Timeline Replay Control
-- Play/Pause button in the time scrubber bar
-- Speed selector: 1x, 2x, 4x (click to cycle)
-- Replay sweeps from 72h ago to present (scrubber hours decrements)
-- Auto-stops at present; can be paused/resumed
-- Keyboard: T toggles scrubber, replay controls in-bar
+### Source Health Freshness Tracking
+- `sourceFreshness` per-layer tracks last successful fetch timestamp
+- Sources panel shows freshness chips next to each source row
+- `/api/metrics/health` UI shows "last ok: Xm" in metric rows
 
-### 7. Source Health Metrics Endpoint
-- **`GET /api/metrics/health`**: Returns per-source latency (EMA), uptime percentage, error count
-- `recordMetric()` server-side function tracks each upstream call
-- Client polls every 30 seconds and renders latency bars and uptime percentages in Sources tab
-- Color-coded bars: green (<3s), amber (3-8s), red (>8s)
+### recordMetric Wired Into All Fetches
+- `/api/proxy` records latency + success/failure for every upstream call
+- Weather, ReliefWeb, GDELT, CISA KEV, OTX, URLhaus, ThreatFox endpoints all instrumented
+- EMA-smoothed latency, uptime percentage, error counts available at `/api/metrics/health`
 
-### 8. Deduplication / Correlation
-- `fingerprint()` generates dedup key from `entity_type + rounded coords + normalized title`
-- `deduplicateEntities()` merges duplicates: highest confidence wins
-- Cross-source correlation: `metadata._correlated_sources` tracks which sources reported same event
-- `correlations` array links related entity IDs
-- Inspector shows "X CORR" badge and "ALSO IN" field for correlated entities
+### Responsive Enhancements
+- Debounced resize handler (150ms) with viewport state update
+- Drawer auto-closes on resize to desktop
+- Mobile inspector closes drawer to prevent stacking
+- Search results show freshness chips inline
+- Threat board items use flexbox layout (no float) for clean wrapping
+- Replay bar uses pill-mode buttons instead of range slider
 
-### 9. Mobile Performance Throttles
-- `MARKER_CAP`: 200 on mobile (vs 500 desktop)
-- `RENDER_THROTTLE_MS`: 500ms on mobile (vs 100ms desktop)
-- Marker glow animation disabled on mobile CSS
-- Cluster `animate: false` on mobile
-- Tooltips disabled on mobile (saves DOM nodes)
-- CelesTrak TLE cap: 30 objects on mobile (vs 60 desktop)
-- Cluster radius increased to 60px on mobile (more aggressive grouping)
-- `prefers-reduced-motion` media query support
+### CSS Updates
+- Domain-distinct card styles: `.air-card`, `.seismic-card` with accent borders
+- Scrubber progress bar (`.scrub-progress`, `.scrub-progress-fill`) replaces range input
+- Replay mode buttons (`.scrub-mode-btn`) as horizontal pills
+- `.replay-pct` for live percentage display
+- `.err-metric` class for red error counts
+- Inspector `.rp-header-inner`, `.rp-domain-tag` for domain accent headers
+- Threat items `.threat-item-top`, `.threat-item-meta` flexbox layout
 
 ## Data Model
 
@@ -131,8 +130,8 @@ Browser (sentinel.js)
 | `risk_score` | 0-100 | Computed threat score |
 | `region` | string | Geographic region |
 | `tags` | string[] | Categorization tags |
-| `correlations` | string[] | Related entity IDs (v8.0 dedup) |
-| `metadata` | object | Source-specific fields + `_correlated_sources` (v8.0) |
+| `correlations` | string[] | Related entity IDs (dedup) |
+| `metadata` | object | Source-specific fields + `_correlated_sources` |
 | `raw_payload_hash` | string | SHA-256/DJB2 of upstream data for lineage tracking |
 | `provenance` | string | `direct-api`, `geocoded-inferred`, `curated-reference`, `no-location` |
 
@@ -185,12 +184,12 @@ Browser (sentinel.js)
 |--------|------|------|-------------|
 | GET | `/api/health` | None | Operational status, version, domain list |
 | GET | `/api/status` | None | Key configuration status, target counts, version |
-| GET | `/api/metrics/health` | None | Per-source latency, uptime, error rates (v8.0) |
+| GET | `/api/metrics/health` | None | Per-source latency, uptime, error rates, last success |
 
 ### Secure Proxy
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/proxy` | None | Server-side proxy for keyed upstream APIs. Body: `{target, params}` |
+| POST | `/api/proxy` | None | Server-side proxy for keyed upstream APIs (with metric recording). Body: `{target, params}` |
 
 ### Domain Endpoints
 | Method | Path | Auth | Description |
@@ -226,6 +225,23 @@ Browser (sentinel.js)
 | T | Toggle time filter / replay |
 | / or F | Focus search |
 | Escape | Close panel / search / drawer |
+
+## Performance Safeguards
+
+| Control | Mobile (<768px) | Desktop |
+|---------|-----------------|---------|
+| Marker cap | 200 | 500 |
+| Render throttle | 500ms | 100ms |
+| Glow animations | Disabled | Enabled |
+| Cluster animate | false | true |
+| Tooltips | Disabled | Enabled |
+| CelesTrak TLE cap | 30 objects | 60 objects |
+| Cluster radius | 60px | 30-45px |
+| Phase 3 defer | +1000ms | 0ms |
+| Phase 5 defer | +3000ms | +2000ms |
+| Phase 6 defer | +5000ms | +4000ms |
+| Viewport culling | Active | Disabled |
+| Resize debounce | 150ms | 150ms |
 
 ## Local Development
 
@@ -269,8 +285,8 @@ sentinel-os/
   src/
     index.tsx          # Hono BFF backend (all API routes, proxy, metrics, canonical schema)
   public/static/
-    sentinel.js        # Frontend (map, drawers, domain tabs, replay, dedupe, mobile throttles)
-    style.css          # Dark-ops CSS (responsive, drawer, chips, compact cards)
+    sentinel.js        # Frontend (unified state, map, drawers, domain tabs, timestamp-aware replay, dedupe, mobile throttles)
+    style.css          # Dark-ops CSS (responsive, drawer, chips, compact cards, domain-distinct cards)
   ecosystem.config.cjs # PM2 config (NO secrets)
   package.json         # Dependencies and scripts
   vite.config.ts       # Vite + Hono Cloudflare Pages plugin
@@ -280,42 +296,38 @@ sentinel-os/
   .gitignore           # Ignores node_modules, dist, .dev.vars, .wrangler
 ```
 
-## Security
+## Remaining Limitations
 
-- **No frontend keys**: All API keys are server-side only
-- **No hardcoded secrets**: `ecosystem.config.cjs` reads from `.dev.vars`
-- **AIS key protection**: `/api/ais/config` returns only availability boolean
-- **Data lineage**: `raw_payload_hash` tracks upstream data provenance
-- **Provenance tracking**: Inferred locations explicitly labeled with low confidence
-- **Structured errors**: Upstream failures return graceful error objects
-- **XSS protection**: All dynamic content in the inspector is HTML-escaped
-- **Deduplication integrity**: Fingerprints prevent duplicate events from inflating counts
+- **Replay is time-window based**: Sweeps a time window from start to end, but does not have per-second timestamp accuracy for individual marker animations
+- **Viewport culling**: Only applied on mobile; desktop renders all entities within marker cap
+- **GNSS data**: Curated reference zones, no real-time GNSS interference API available
+- **Social geolocation**: Text-inference only (15-35% confidence), no GPS coordinates from posts
+- **AIS maritime**: Requires paid AISStream key for live vessel tracking
+- **recordMetric timing**: Some endpoints use approximate timing due to multi-step processing
+- **Satellite imagery**: Tile loading depends on NASA GIBS availability; day-old imagery by default
 
 ## Changelog
 
+### v8.1.0 (2026-04-08)
+- Unified state object for all map, UI, drawer, replay, viewport, and entity tracking
+- Timestamp-aware timeline replay: mode-based (LIVE/1H/24H/72H) with progress bar
+- Viewport-based layer culling on mobile
+- Deferred heavy layer fetching with mobile-specific delays
+- Domain-distinct inspector cards (air, seismic, cyber, gnss, social)
+- Source freshness tracking (per-layer last success timestamps)
+- `recordMetric()` wired into proxy, weather, reliefweb, gdelt, cisa-kev, otx, urlhaus, threatfox
+- Responsive resize debounce, drawer auto-close on breakpoint change
+- CSS: domain card accent styles, scrubber progress bar, replay modes, flexbox threat items
+- Version bump to 8.1.0
+
 ### v8.0.0 (2026-04-07)
-- **Responsive layout**: Mobile-first CSS, CSS custom properties for panel widths, `position:fixed` body
-- **Mobile drawer**: Left panel slides in from left on mobile, overlay backdrop, hamburger menu
-- **Compact cards**: Inspector shows summary by default, "SHOW DETAILS" expands full fields
-- **Domain tabs**: Horizontal scrollable pill tabs (ALL/AIR/SEA/SPACE/WEATHER/CONFLICT/CYBER/GNSS/SOCIAL)
-- **Confidence chips**: Inline colored pills (green >=80%, amber 50-79%, red <50%)
-- **Freshness chips**: Inline colored pills (green <1h, amber 1-24h, grey >24h)
-- **Timeline replay**: Play/Pause button, speed selector (1x/2x/4x), sweeps 72h to present
-- **Source metrics**: `GET /api/metrics/health` endpoint, per-source latency/uptime/error tracking
-- **Source metrics UI**: Latency bars, uptime percentages in Sources tab, color-coded health
-- **Deduplication**: Fingerprint-based dedupe (entity_type + coords + title), cross-source correlation
-- **Correlation tracking**: `_correlated_sources` metadata, "ALSO IN" inspector field
-- **Mobile performance**: Marker cap 200, render throttle 500ms, no glow animations, disabled tooltips
-- **Cluster optimization**: Increased radius on mobile (60px), disabled animate on mobile
-- **CelesTrak cap**: 30 objects on mobile (vs 60 desktop)
-- **Reduced-motion**: `prefers-reduced-motion` media query support
-- **Version bump to 8.0.0**
+- Responsive layout, mobile drawer, compact cards, domain tabs, confidence/freshness chips
+- Timeline replay controls, source metrics endpoint, deduplication/correlation
+- Mobile performance throttles, cluster optimization, CelesTrak cap
 
 ### v7.0.0 (2026-04-04)
 - Canonical event schema with `raw_payload_hash` for data lineage
 - Mastodon social intelligence, AVWX METAR, time scrubber, health heartbeat
-- Expanded GEO_DB to ~120 locations, CISA KEV triple-fallback
-- CSS overhaul: connection indicators, time scrubber, tablet/XL breakpoints
 
 ### v6.1.0 (2026-04-02)
 - Production-grade rewrite: canonical schema, provenance tracking, satellite imagery engine

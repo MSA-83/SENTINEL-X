@@ -34,7 +34,7 @@ type Bindings = {
 const app = new Hono<{ Bindings: Bindings }>()
 app.use('/api/*', cors())
 
-const VERSION = '8.0.0'
+const VERSION = '8.1.0'
 const UA = `SENTINEL-OS/${VERSION} (OSINT Platform)`
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -368,6 +368,7 @@ app.post('/api/proxy', async (c) => {
   if (config.authType === 'rapidapi' && secret) { headers['X-RapidAPI-Key'] = secret; headers['X-RapidAPI-Host'] = config.rapidApiHost || '' }
   if (config.authType === 'header' && config.headerName && secret) headers[config.headerName] = secret
 
+  const t0 = Date.now()
   try {
     let res: Response
     try {
@@ -375,16 +376,27 @@ app.post('/api/proxy', async (c) => {
     } catch (err) {
       if (config.fallbackUrl) {
         try { res = await safeFetch(config.fallbackUrl, { headers }, 8000) }
-        catch { return c.json(upstreamError(target, 0, 'Primary and fallback failed')) }
-      } else { return c.json(upstreamError(target, 0, String(err))) }
+        catch {
+          recordMetric(target, Date.now() - t0, false)
+          return c.json(upstreamError(target, 0, 'Primary and fallback failed'))
+        }
+      } else {
+        recordMetric(target, Date.now() - t0, false)
+        return c.json(upstreamError(target, 0, String(err)))
+      }
     }
     if (!res!.ok) {
       const body = await res!.text()
+      recordMetric(target, Date.now() - t0, false)
       return c.json(upstreamError(target, res!.status, body.slice(0, 400)))
     }
+    recordMetric(target, Date.now() - t0, true)
     if (config.responseType === 'text') return c.text(await res!.text())
     return c.json(await res!.json())
-  } catch (error) { return c.json(upstreamError(target, 0, String(error))) }
+  } catch (error) {
+    recordMetric(target, Date.now() - t0, false)
+    return c.json(upstreamError(target, 0, String(error)))
+  }
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -415,8 +427,12 @@ app.get('/api/weather/global', async (c) => {
       )
     )
     const list = results.filter(r => r.status === 'fulfilled' && (r as any).value?.coord).map(r => (r as PromiseFulfilledResult<any>).value)
+    recordMetric('owm', Date.now() - Date.now(), list.length > 0)
     return c.json({ events: list, count: list.length, source: 'openweathermap' })
-  } catch (error) { return c.json(upstreamError('owm', 0, String(error))) }
+  } catch (error) {
+    recordMetric('owm', 0, false)
+    return c.json(upstreamError('owm', 0, String(error)))
+  }
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -496,12 +512,15 @@ app.post('/api/shodan/search', async (c) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/reliefweb/disasters', async (c) => {
   try {
+    const t0 = Date.now()
     const data = await safeJson(
       'https://api.reliefweb.int/v1/disasters?appname=sentinel-os-osint&limit=50&sort[]=date:desc&fields[include][]=name&fields[include][]=country&fields[include][]=status&fields[include][]=primary_type&fields[include][]=glide&fields[include][]=date',
       {}, 12000,
     )
+    recordMetric('reliefweb', Date.now() - t0, true)
     return c.json(data)
   } catch {
+    recordMetric('reliefweb', 0, false)
     return c.json({ data: [], _upstream_error: true, message: 'ReliefWeb API unavailable' })
   }
 })
@@ -550,6 +569,7 @@ app.post('/api/intel/gdelt', async (c) => {
     if (!data) return c.json({ events: [], _upstream_error: true, message: 'GDELT unavailable or rate-limited' })
     const articles = data.articles || []
     const h = await hashPayload(data)
+    recordMetric('gdelt_' + (category || 'conflict'), Date.now() - Date.now(), articles.length > 0)
     const events: CanonicalEvent[] = articles.map((art: any, i: number) => {
       const geo = geocodeFromText(art.title || '')
       if (!geo) return null
@@ -616,6 +636,7 @@ app.get('/api/cyber/cisa-kev', async (c) => {
       const data = await safeJson(url, {}, 15000)
       const vulns = (data.vulnerabilities || []).slice(0, 100)
       const h = await hashPayload(data)
+      recordMetric('cisa_kev', Date.now() - Date.now(), true)
       const events: CanonicalEvent[] = vulns.map((v: any, i: number) => evt({
         id: `kev_${v.cveID || i}`, entity_type: 'cyber_vulnerability',
         source: 'CISA KEV', source_url: `https://nvd.nist.gov/vuln/detail/${v.cveID}`,
@@ -629,6 +650,7 @@ app.get('/api/cyber/cisa-kev', async (c) => {
       return c.json({ events, count: events.length, catalog_date: data.catalogVersion, source: 'cisa-kev' })
     } catch { /* try next mirror */ }
   }
+  recordMetric('cisa_kev', 0, false)
   return c.json(upstreamError('cisa-kev', 0, 'All CISA KEV mirrors unavailable'))
 })
 
@@ -665,6 +687,7 @@ app.get('/api/cyber/otx', async (c) => {
       }
     } catch { /* try next fallback */ }
   }
+  recordMetric('otx', 0, false)
   return c.json(upstreamError('otx', 0, 'OTX API unavailable. Register free at https://otx.alienvault.com/'))
 })
 
@@ -717,7 +740,10 @@ app.get('/api/cyber/urlhaus', async (c) => {
       return c.json({ events, count: events.length, source: 'urlhaus-csv' })
     }
     return c.json(upstreamError('urlhaus', 0, 'URLhaus API unavailable'))
-  } catch (error) { return c.json(upstreamError('urlhaus', 0, String(error))) }
+  } catch (error) {
+    recordMetric('urlhaus', 0, false)
+    return c.json(upstreamError('urlhaus', 0, String(error)))
+  }
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -749,7 +775,10 @@ app.get('/api/cyber/threatfox', async (c) => {
       return c.json({ events, count: events.length, source: 'threatfox' })
     }
     return c.json(upstreamError('threatfox', 0, 'ThreatFox API unavailable'))
-  } catch (error) { return c.json(upstreamError('threatfox', 0, String(error))) }
+  } catch (error) {
+    recordMetric('threatfox', 0, false)
+    return c.json(upstreamError('threatfox', 0, String(error)))
+  }
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
