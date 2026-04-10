@@ -272,10 +272,11 @@ const safeFetch = async (url: string, opts: RequestInit = {}, timeoutMs = 12000)
   }
 }
 
-export async function safeJson(url: string, opts: RequestInit = {}, timeoutMs = 12000): Promise<any> {
+export async function safeJson<T = unknown>(url: string, opts: RequestInit = {}, timeoutMs = 12000): Promise<T> {
   const res = await safeFetch(url, opts, timeoutMs)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const data = await res.json()
+  return data as T
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -512,7 +513,8 @@ const spaceTrackQuery = async (user: string, pass: string, queryUrl: string): Pr
 
     // Check for login errors in response body
     const loginBody = await loginRes.text()
-    if (loginBody.includes('Failed') || loginBody.includes('does not meet') || loginBody.includes('Invalid') || loginBody.includes('disabled')) {
+    const loginErrorKeywords = ['Failed', 'does not meet', 'Invalid', 'disabled']
+    if (loginErrorKeywords.some(keyword => loginBody.includes(keyword))) {
       spaceTrackLoginError = loginBody.replace(/[{}"]/g, '').trim().slice(0, 200)
       return null
     }
@@ -772,17 +774,28 @@ app.get('/api/acled/events', async (c) => {
 // GDELT CONFLICT INTEL — Article-based geocoding
 // Free, no key: https://api.gdeltproject.org/
 // ═══════════════════════════════════════════════════════════════════════════════
-export async function fetchGDELT(url: string): Promise<any> {
+export async function fetchGDELT(url: string): Promise<unknown | null> {
+  const delays = [0, 2000]
+  const statusMap: Record<number, 'retry' | 'error' | 'ok'> = { 429: 'retry' }
+
   for (let i = 0; i < 2; i++) {
     try {
-      if (i > 0) await new Promise(r => setTimeout(r, 2000))
+      await new Promise(r => setTimeout(r, delays[i]))
       const res = await safeFetch(url, {}, 8000)
-      if (res.status === 429) continue
-      if (!res.ok) return null
+      const action = statusMap[res.status] || (res.ok ? 'ok' : 'error')
+
+      if (action === 'retry') continue
+      if (action === 'error') return null
+
       const text = await res.text()
-      try { return JSON.parse(text) } catch { return null }
+      try {
+        return JSON.parse(text) as unknown
+      } catch {
+        return null
+      }
     } catch { /* retry */ }
   }
+
   return null
 }
 
