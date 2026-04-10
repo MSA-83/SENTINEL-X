@@ -1,6 +1,8 @@
 /**
- * SENTINEL OS v7.0 — Global Multi-Domain Situational Awareness Platform
+ * SENTINEL OS v8.2 — Global Multi-Domain Situational Awareness Platform
  * Secure Edge BFF (Backend-for-Frontend) on Cloudflare Pages
+ *
+ * v8.2: Space-Track, Copernicus Sentinel Hub, Cesium ion, Abuse.ch auth
  *
  * Architecture:
  *   - All keyed API calls route through server-side proxy — browser NEVER sees secrets
@@ -29,12 +31,18 @@ type Bindings = {
   NEWS_API_KEY?: string
   AISSTREAM_KEY?: string
   OTX_KEY?: string
+  ABUSECH_AUTH_KEY?: string
+  SPACETRACK_USER?: string
+  SPACETRACK_PASS?: string
+  COPERNICUS_CLIENT_ID?: string
+  COPERNICUS_CLIENT_SECRET?: string
+  CESIUM_ION_TOKEN?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
 app.use('/api/*', cors())
 
-const VERSION = '8.1.0'
+const VERSION = '8.2.0'
 const UA = `SENTINEL-OS/${VERSION} (OSINT Platform)`
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -465,6 +473,237 @@ app.get('/api/ais/config', (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SPACE-TRACK — Authenticated satellite catalog + conjunction data
+// Uses cookie-based auth: POST login -> use session cookie for queries
+// Rate limit: 30 req/min, 300 req/hour
+// Requires: SPACETRACK_USER + SPACETRACK_PASS
+// ═══════════════════════════════════════════════════════════════════════════════
+let spaceTrackCookie = ''
+let spaceTrackCookieExpiry = 0
+
+/** Space-Track: combined login+query in a single POST.
+ *  Space-Track supports a combined form where you POST the query URL as a
+ *  parameter alongside credentials. If that fails, fall back to a two-step
+ *  cookie-based approach. Cloudflare Workers have full cookie support via
+ *  getSetCookie(). */
+async function spaceTrackQuery(user: string, pass: string, queryUrl: string): Promise<Response | null> {
+  // Approach 1: Reuse cached session cookie
+  if (spaceTrackCookie && Date.now() < spaceTrackCookieExpiry) {
+    try {
+      const dataRes = await safeFetch(queryUrl, {
+        headers: { Cookie: spaceTrackCookie, 'User-Agent': UA },
+      }, 18000)
+      if (dataRes.ok) return dataRes
+      // Cookie expired or invalid, fall through to re-auth
+      spaceTrackCookie = ''
+      spaceTrackCookieExpiry = 0
+    } catch { /* re-authenticate */ }
+  }
+
+  // Approach 2: Login + query via two-step with proper cookie extraction
+  try {
+    const loginRes = await fetch('https://www.space-track.org/ajaxauth/login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': UA,
+      },
+      body: `identity=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`,
+      redirect: 'manual',  // Don't follow redirects — capture cookie first
+    })
+
+    // Extract cookie — try multiple methods for Workers compatibility
+    let cookie = ''
+
+    // Method 1: getSetCookie() — available in Cloudflare Workers
+    try {
+      const cookies = (loginRes.headers as any).getSetCookie?.() || []
+      for (const c of cookies) {
+        const m = c.match(/chocolatechip=([^;]+)/)
+        if (m) { cookie = `chocolatechip=${m[1]}`; break }
+      }
+    } catch { /* noop */ }
+
+    // Method 2: Fallback to set-cookie header (may be joined)
+    if (!cookie) {
+      const setCookieHeader = loginRes.headers.get('set-cookie') || ''
+      const match = setCookieHeader.match(/chocolatechip=([^;]+)/)
+      if (match) cookie = `chocolatechip=${match[1]}`
+    }
+
+    // Method 3: Check response body for session indicator and retry without redirect:manual
+    if (!cookie) {
+      // Some proxies strip set-cookie; try normal follow and check for cookie in login body
+      try {
+        const loginRes2 = await fetch('https://www.space-track.org/ajaxauth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
+          body: `identity=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`,
+        })
+        // Check for cookies in second response
+        try {
+          const cookies2 = (loginRes2.headers as any).getSetCookie?.() || []
+          for (const c of cookies2) {
+            const m = c.match(/chocolatechip=([^;]+)/)
+            if (m) { cookie = `chocolatechip=${m[1]}`; break }
+          }
+        } catch { /* noop */ }
+        if (!cookie) {
+          const sc2 = loginRes2.headers.get('set-cookie') || ''
+          const m2 = sc2.match(/chocolatechip=([^;]+)/)
+          if (m2) cookie = `chocolatechip=${m2[1]}`
+        }
+      } catch { /* noop */ }
+    }
+
+    if (!cookie) {
+      // Last resort: try the combined login+query approach
+      // Space-Track's ajaxauth/login endpoint can be followed by a query in the URL
+      try {
+        const combinedRes = await fetch('https://www.space-track.org/ajaxauth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
+          body: `identity=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}&query=${encodeURIComponent(queryUrl)}`,
+        })
+        if (combinedRes.ok) {
+          const ct = combinedRes.headers.get('content-type') || ''
+          if (ct.includes('json') || ct.includes('text')) return combinedRes
+        }
+      } catch { /* noop */ }
+      return null
+    }
+
+    // Cache the cookie for reuse (~58 minutes)
+    spaceTrackCookie = cookie
+    spaceTrackCookieExpiry = Date.now() + 3500000
+
+    // Step 2: Use cookie for actual query
+    const dataRes = await safeFetch(queryUrl, {
+      headers: { Cookie: cookie, 'User-Agent': UA },
+    }, 18000)
+    return dataRes
+  } catch { return null }
+}
+
+app.get('/api/spacetrack/gp', async (c) => {
+  const user = c.env.SPACETRACK_USER
+  const pass = c.env.SPACETRACK_PASS
+  if (!user || !pass) return c.json(upstreamError('spacetrack', 0, 'SPACETRACK_USER/SPACETRACK_PASS not configured'))
+  const t0 = Date.now()
+  try {
+    const url = 'https://www.space-track.org/basicspacedata/query/class/gp/OBJECT_TYPE/PAYLOAD/DECAY_DATE/null-val/EPOCH/%3Enow-7/orderby/NORAD_CAT_ID%20asc/limit/200/format/json'
+    const res = await spaceTrackQuery(user, pass, url)
+    if (!res || !res.ok) { recordMetric('spacetrack', Date.now() - t0, false); return c.json(upstreamError('spacetrack', res?.status || 0, 'GP query failed')) }
+    const data = await res.json() as any[]
+    const h = await hashPayload(data)
+    const events: CanonicalEvent[] = (data || []).slice(0, 150).map((gp: any, i: number) => {
+      const period = parseFloat(gp.PERIOD) || 90
+      const apogee = parseFloat(gp.APOGEE) || 0
+      const perigee = parseFloat(gp.PERIGEE) || 0
+      return evt({
+        id: `stgp_${gp.NORAD_CAT_ID || i}`, entity_type: 'satellite',
+        source: 'Space-Track.org', source_url: 'https://www.space-track.org/',
+        title: (gp.OBJECT_NAME || 'NORAD:' + gp.NORAD_CAT_ID).trim(),
+        description: `${gp.OBJECT_TYPE || 'PAYLOAD'} | ${gp.COUNTRY_CODE || '??'} | Period: ${period.toFixed(1)} min`,
+        altitude: Math.round((apogee + perigee) / 2), confidence: 98, severity: 'info',
+        tags: ['satellite', 'space-track', gp.COUNTRY_CODE || ''].filter(Boolean),
+        provenance: 'direct-api', raw_payload_hash: h,
+        metadata: {
+          norad_id: gp.NORAD_CAT_ID, intl_designator: gp.OBJECT_ID, country: gp.COUNTRY_CODE,
+          object_type: gp.OBJECT_TYPE, rcs_size: gp.RCS_SIZE, epoch: gp.EPOCH,
+          inclination: parseFloat(gp.INCLINATION) || 0, period_min: period,
+          apogee_km: apogee, perigee_km: perigee,
+          mean_motion: parseFloat(gp.MEAN_MOTION) || 0, eccentricity: parseFloat(gp.ECCENTRICITY) || 0,
+          tle_line1: gp.TLE_LINE1, tle_line2: gp.TLE_LINE2,
+        },
+      })
+    })
+    recordMetric('spacetrack', Date.now() - t0, true)
+    return c.json({ events, count: events.length, source: 'space-track-gp', raw_payload_hash: h })
+  } catch (error) {
+    recordMetric('spacetrack', Date.now() - t0, false)
+    return c.json(upstreamError('spacetrack', 0, String(error)))
+  }
+})
+
+app.get('/api/spacetrack/cdm', async (c) => {
+  const user = c.env.SPACETRACK_USER
+  const pass = c.env.SPACETRACK_PASS
+  if (!user || !pass) return c.json(upstreamError('spacetrack', 0, 'SPACETRACK credentials not configured'))
+  const t0 = Date.now()
+  try {
+    const url = 'https://www.space-track.org/basicspacedata/query/class/cdm_public/CREATION_DATE/%3Enow-2/orderby/TCA%20desc/limit/50/format/json'
+    const res = await spaceTrackQuery(user, pass, url)
+    if (!res || !res.ok) { recordMetric('spacetrack_cdm', Date.now() - t0, false); return c.json(upstreamError('spacetrack', res?.status || 0, 'CDM query failed')) }
+    const data = await res.json() as any[]
+    const h = await hashPayload(data)
+    const events: CanonicalEvent[] = (data || []).slice(0, 40).map((cdm: any, i: number) => {
+      const missDistKm = parseFloat(cdm.MISS_DISTANCE) || 9999
+      const collisionProb = parseFloat(cdm.COLLISION_PROBABILITY) || 0
+      const severity = collisionProb > 1e-3 ? 'critical' : collisionProb > 1e-5 ? 'high' : missDistKm < 1 ? 'high' : missDistKm < 5 ? 'medium' : 'low'
+      return evt({
+        id: `cdm_${cdm.CDM_ID || i}`, entity_type: 'conjunction',
+        source: 'Space-Track CDM', source_url: 'https://www.space-track.org/',
+        title: `CONJUNCTION: ${(cdm.SAT_1_NAME || 'OBJ1').trim()} <> ${(cdm.SAT_2_NAME || 'OBJ2').trim()}`,
+        description: `Miss: ${missDistKm.toFixed(3)} km | Prob: ${collisionProb.toExponential(2)} | TCA: ${cdm.TCA || ''}`,
+        confidence: 95, severity,
+        risk_score: collisionProb > 1e-4 ? 90 : collisionProb > 1e-6 ? 60 : 30,
+        timestamp: cdm.TCA || cdm.CREATION_DATE || '',
+        tags: ['conjunction', 'cdm', severity],
+        provenance: 'direct-api', raw_payload_hash: h,
+        metadata: {
+          cdm_id: cdm.CDM_ID, sat1_name: cdm.SAT_1_NAME, sat1_id: cdm.SAT_1_ID,
+          sat2_name: cdm.SAT_2_NAME, sat2_id: cdm.SAT_2_ID, tca: cdm.TCA,
+          miss_distance_km: missDistKm, collision_probability: collisionProb,
+          relative_speed: cdm.RELATIVE_SPEED,
+        },
+      })
+    })
+    recordMetric('spacetrack_cdm', Date.now() - t0, true)
+    return c.json({ events, count: events.length, source: 'space-track-cdm', raw_payload_hash: h })
+  } catch (error) {
+    recordMetric('spacetrack_cdm', Date.now() - t0, false)
+    return c.json(upstreamError('spacetrack', 0, String(error)))
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COPERNICUS — Sentinel Hub OAuth2 token proxy for hi-res imagery
+// ═══════════════════════════════════════════════════════════════════════════════
+let copernicusToken = ''
+let copernicusTokenExpiry = 0
+
+app.get('/api/copernicus/token', async (c) => {
+  const clientId = c.env.COPERNICUS_CLIENT_ID
+  const clientSecret = c.env.COPERNICUS_CLIENT_SECRET
+  if (!clientId || !clientSecret) return c.json(upstreamError('copernicus', 0, 'COPERNICUS_CLIENT_ID/SECRET not configured'))
+  if (copernicusToken && Date.now() < copernicusTokenExpiry) {
+    return c.json({ access_token: copernicusToken, expires_in: Math.round((copernicusTokenExpiry - Date.now()) / 1000), source: 'copernicus-cached' })
+  }
+  try {
+    const res = await safeFetch('https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`,
+    }, 15000)
+    if (!res.ok) { const t = await res.text(); return c.json(upstreamError('copernicus', res.status, t.slice(0, 300))) }
+    const data = await res.json() as any
+    copernicusToken = data.access_token || ''
+    copernicusTokenExpiry = Date.now() + ((data.expires_in || 290) - 10) * 1000
+    return c.json({ access_token: copernicusToken, expires_in: data.expires_in || 300, source: 'copernicus' })
+  } catch (error) { return c.json(upstreamError('copernicus', 0, String(error))) }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CESIUM ION — Token proxy (never expose in frontend source code)
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/cesium/token', (c) => {
+  const token = c.env.CESIUM_ION_TOKEN
+  if (!token) return c.json(upstreamError('cesium', 0, 'CESIUM_ION_TOKEN not configured'))
+  return c.json({ token, source: 'cesium-ion' })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SHODAN — Internet exposure
 // Requires: SHODAN_KEY (free at https://shodan.io)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -696,10 +935,13 @@ app.get('/api/cyber/otx', async (c) => {
 // https://urlhaus-api.abuse.ch/
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/cyber/urlhaus', async (c) => {
+  const authKey = c.env.ABUSECH_AUTH_KEY || ''
   try {
+    const uhHeaders: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' }
+    if (authKey) uhHeaders['Auth-Key'] = authKey
     const res = await safeFetch('https://urlhaus-api.abuse.ch/v1/urls/recent/limit/50/', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: uhHeaders,
     }, 10000)
     if (res.ok) {
       const ct = res.headers.get('content-type') || ''
@@ -751,10 +993,13 @@ app.get('/api/cyber/urlhaus', async (c) => {
 // https://threatfox-api.abuse.ch/
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/cyber/threatfox', async (c) => {
+  const authKey = c.env.ABUSECH_AUTH_KEY || ''
   try {
+    const tfHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (authKey) tfHeaders['Auth-Key'] = authKey
     const res = await safeFetch('https://threatfox-api.abuse.ch/api/v1/', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: tfHeaders,
       body: JSON.stringify({ query: 'get_iocs', days: 3 }),
     }, 10000)
     if (res.ok) {
@@ -1030,7 +1275,8 @@ app.get('/api/metrics/health', (c) => {
   const layerSources: Record<string, string[]> = {
     aircraft: ['opensky'], military: ['opensky', 'military'],
     ships: ['aisstream'], darkships: ['gfw_gap'], fishing: ['gfw_fishing'],
-    iss: ['iss'], satellites: ['n2yo', 'celestrak'], debris: ['celestrak'],
+    iss: ['iss'], satellites: ['n2yo', 'celestrak', 'spacetrack'], debris: ['celestrak'],
+    conjunctions: ['spacetrack_cdm'],
     seismic: ['usgs'], wildfires: ['firms'], weather: ['owm'],
     conflict: ['gdelt_conflict', 'acled'], disasters: ['gdacs', 'reliefweb'],
     nuclear: ['gdelt_nuclear'], cyber: ['cisa_kev', 'otx', 'urlhaus', 'threatfox'],
@@ -1082,7 +1328,7 @@ app.get('/api/health', (c) => c.json({
 }))
 
 app.get('/api/status', (c) => {
-  const keyNames: (keyof Bindings)[] = ['NASA_FIRMS_KEY', 'OWM_KEY', 'N2YO_KEY', 'GFW_TOKEN', 'AVWX_KEY', 'RAPIDAPI_KEY', 'SHODAN_KEY', 'NEWS_API_KEY', 'AISSTREAM_KEY', 'OTX_KEY', 'ACLED_KEY', 'ACLED_EMAIL']
+  const keyNames: (keyof Bindings)[] = ['NASA_FIRMS_KEY', 'OWM_KEY', 'N2YO_KEY', 'GFW_TOKEN', 'AVWX_KEY', 'RAPIDAPI_KEY', 'SHODAN_KEY', 'NEWS_API_KEY', 'AISSTREAM_KEY', 'OTX_KEY', 'ACLED_KEY', 'ACLED_EMAIL', 'ABUSECH_AUTH_KEY', 'SPACETRACK_USER', 'SPACETRACK_PASS', 'COPERNICUS_CLIENT_ID', 'COPERNICUS_CLIENT_SECRET', 'CESIUM_ION_TOKEN']
   const keys: Record<string, boolean> = {}
   for (const k of keyNames) keys[k] = !!(c.env[k])
   return c.json({
@@ -1105,7 +1351,7 @@ app.get('/', (c) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<title>SENTINEL OS v${VERSION}</title>
+<title>SENTINEL OS v${VERSION} — Global Situational Awareness</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F6F0;</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Orbitron:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">

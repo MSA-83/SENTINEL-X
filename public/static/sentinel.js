@@ -1,5 +1,5 @@
 /**
- * SENTINEL OS v8.1 — Global Situational Awareness Client
+ * SENTINEL OS v8.2 — Global Situational Awareness Client
  *
  * Refactored for:
  *   1. Stable unified state object (S.state)
@@ -14,6 +14,10 @@
  *  10. Mobile performance throttles (marker caps, render throttle, deferred layers)
  *  11. Viewport-based layer culling, cluster-aware rendering
  *  12. Safe Leaflet initialization (L is not defined guard)
+ *  13. Space-Track GP/CDM integration (conjunctions, SATCAT)
+ *  14. Copernicus Sentinel Hub hi-res imagery (OAuth2 token proxy)
+ *  15. Cesium ion 3D globe readiness
+ *  16. Abuse.ch authenticated feeds
  */
 ;(function () {
   'use strict'
@@ -74,6 +78,7 @@
     disasters:  { label: 'DISASTERS',    icon: '\u26A0',       color: '#ff8c00', domain: 'CONFLICT', src: 'GDACS + ReliefWeb' },
     nuclear:    { label: 'NUCLEAR',      icon: '\u2622',       color: '#ff00ff', domain: 'CONFLICT', src: 'GDELT Nuclear' },
     cyber:      { label: 'CYBER',        icon: '\uD83D\uDD12', color: '#66ffcc', domain: 'CYBER',    src: 'CISA + OTX + URLhaus + ThreatFox' },
+    conjunctions: { label: 'CONJUNCTIONS', icon: '\u26A1', color: '#ff00ff', domain: 'SPACE', src: 'Space-Track CDM' },
     gnss:       { label: 'GNSS',         icon: '\uD83D\uDCE1', color: '#ff6633', domain: 'GNSS',     src: 'Curated + GDELT' },
     social:     { label: 'SOCIAL',       icon: '\uD83D\uDCF1', color: '#ff44aa', domain: 'SOCIAL',   src: 'Reddit + Mastodon OSINT' },
   }
@@ -201,7 +206,7 @@
     state.counts[k] = 0
   })
   // Default off layers
-  ;['ships', 'debris'].forEach(function (k) { state.layerState[k] = false })
+  ;['ships', 'debris', 'conjunctions'].forEach(function (k) { state.layerState[k] = false })
 
   // ═══════════════════════════════════════════════════════════════
   // RESPONSIVE DETECTION
@@ -309,6 +314,12 @@
     if (e.entity_type?.startsWith('nuclear')) { s += 35; reasons.push('Nuclear intel') }
     if (e.entity_type?.startsWith('cyber')) { s += 15; reasons.push('Cyber threat') }
     if (e.entity_type?.startsWith('gnss')) { s += 20; reasons.push('GNSS anomaly') }
+    if (e.entity_type === 'conjunction') {
+      var cp = e.metadata?.collision_probability || 0
+      if (cp > 1e-3) { s += 80; reasons.push('HIGH collision prob') }
+      else if (cp > 1e-5) { s += 45; reasons.push('Conjunction alert') }
+      else { s += 15; reasons.push('CDM') }
+    }
     if (e.entity_type === 'disaster') {
       s += (e.severity === 'critical' ? 40 : 15); reasons.push('Disaster')
     }
@@ -528,6 +539,18 @@
     }).filter(Boolean)
   }
 
+  // Parse Space-Track GP data
+  function parseSpaceTrackGP(data) {
+    if (!data?.events) return []
+    return data.events.map(function (e) { return Object.assign(ce({}), e) })
+  }
+
+  // Parse Space-Track CDM (conjunction) data
+  function parseSpaceTrackCDM(data) {
+    if (!data?.events) return []
+    return data.events.map(function (e) { return Object.assign(ce({}), e) })
+  }
+
   function parseShodan(data) {
     var matches = data?.matches || []
     return matches.slice(0, 40).map(function (m, i) {
@@ -630,6 +653,7 @@
       cyber_malware_url: 'cyber', cyber_ioc: 'cyber', cyber_intel: 'cyber',
       gnss_jamming: 'gnss', gnss_spoofing: 'gnss', gnss_news: 'gnss',
       social_post: 'social',
+      conjunction: 'conjunctions',
     }
     return m[et] || 'conflict'
   }
@@ -984,6 +1008,7 @@
     viirs_snpp: { label: 'VIIRS SNPP', sub: 'True Color', layer: 'VIIRS_SNPP_CorrectedReflectance_TrueColor', matrixSet: 'GoogleMapsCompatible_Level9', format: 'jpg', maxZoom: 9, daily: true, desc: '250 m/px daily' },
     viirs_night: { label: 'VIIRS Night', sub: 'Day/Night Band', layer: 'VIIRS_SNPP_DayNightBand_AtSensor_M15', matrixSet: 'GoogleMapsCompatible_Level8', format: 'png', maxZoom: 8, daily: false, desc: 'Monthly composite' },
     sentinel2: { label: 'Sentinel-2', sub: 'Cloudless 2024', tileUrl: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857_512/default/GoogleMapsCompatible_Level15/{z}/{y}/{x}.jpg', maxZoom: 15, daily: false, desc: '10 m/px annual mosaic' },
+    copernicus: { label: 'Copernicus SH', sub: 'Sentinel-2 L2A', maxZoom: 16, daily: true, desc: '10 m/px hi-res (OAuth2)', copernicus: true },
   }
 
   function initSatDate() {
@@ -998,12 +1023,58 @@
     return 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/' + p.layer + '/default/' + state.satDate + '/' + p.matrixSet + '/{z}/{y}/{x}.' + p.format
   }
 
+  // Copernicus token cache
+  var copernicusTokenCache = { token: '', expiry: 0 }
+
+  async function getCopernicusToken() {
+    if (copernicusTokenCache.token && Date.now() < copernicusTokenCache.expiry) return copernicusTokenCache.token
+    try {
+      var data = await getApi('/api/copernicus/token')
+      if (data && !isErr(data) && data.access_token) {
+        copernicusTokenCache.token = data.access_token
+        copernicusTokenCache.expiry = Date.now() + ((data.expires_in || 280) * 1000)
+        return data.access_token
+      }
+    } catch (e) { /* fallback silently */ }
+    return ''
+  }
+
   function applySatelliteLayer(key) {
     if (!state.map) return
     if (state.satTileLayer) { state.map.removeLayer(state.satTileLayer); state.satTileLayer = null }
     if (state.satLabelLayer) { state.map.removeLayer(state.satLabelLayer); state.satLabelLayer = null }
     if (key === 'none' || !key) { state.activeSatLayer = null; renderUI(); return }
     var p = SAT_PRODUCTS[key]; if (!p) return
+
+    // Copernicus Sentinel Hub needs a token-based WMS URL
+    if (p.copernicus) {
+      state.activeSatLayer = key
+      getCopernicusToken().then(function (token) {
+        if (!token) { log('Copernicus token unavailable', 'error'); state.activeSatLayer = null; renderUI(); return }
+        var shUrl = 'https://sh.dataspace.copernicus.eu/ogc/wms/' + token
+          + '?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=TRUE-COLOR-S2L2A'
+          + '&BBOX={bbox-epsg-3857}&WIDTH=512&HEIGHT=512&SRS=EPSG:3857&FORMAT=image/jpeg'
+          + '&TIME=' + state.satDate + '/' + state.satDate
+          + '&MAXCC=30'
+        // Use Leaflet's WMS capability
+        state.satTileLayer = L.tileLayer.wms('https://sh.dataspace.copernicus.eu/ogc/wms/' + token, {
+          layers: 'TRUE-COLOR-S2L2A',
+          format: 'image/jpeg',
+          transparent: false,
+          time: state.satDate + '/' + state.satDate,
+          maxcc: 30,
+          maxZoom: 16,
+          opacity: 0.92,
+        })
+        state.satTileLayer.addTo(state.map); state.satTileLayer.setZIndex(50)
+        state.satLabelLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 18, opacity: 0.7 })
+        state.satLabelLayer.addTo(state.map); state.satLabelLayer.setZIndex(51)
+        log('Copernicus SH: Sentinel-2 L2A (' + state.satDate + ')', 'info')
+        renderUI()
+      })
+      return
+    }
+
     var url = p.tileUrl || buildGIBSUrl(key); if (!url) return
     state.activeSatLayer = key
     state.satTileLayer = L.tileLayer(url, { maxZoom: p.maxZoom || 9, opacity: 0.92, attribution: '' })
@@ -1126,7 +1197,8 @@
       h += '<div style="padding:6px 12px;font-size:6.5px;color:var(--t3);border-top:1px solid var(--brd)">'
       h += '<a href="https://gibs.earthdata.nasa.gov/" target="_blank" style="color:var(--t3);text-decoration:none">NASA GIBS</a>'
       h += ' \u00B7 <a href="https://worldview.earthdata.nasa.gov/" target="_blank" style="color:var(--t3);text-decoration:none">Worldview</a>'
-      h += ' \u00B7 <a href="https://s2maps.eu/" target="_blank" style="color:var(--t3);text-decoration:none">EOX S2</a></div></div>'
+      h += ' \u00B7 <a href="https://s2maps.eu/" target="_blank" style="color:var(--t3);text-decoration:none">EOX S2</a>'
+      h += ' \u00B7 <a href="https://dataspace.copernicus.eu/" target="_blank" style="color:var(--t3);text-decoration:none">Copernicus</a></div></div>'
     }
 
     // ── SAT INDICATOR ──
@@ -1344,6 +1416,16 @@
           ['FELT', e.metadata?.felt ? e.metadata.felt + ' reports' : null],
         ])
       }
+      if (e.entity_type === 'conjunction') {
+        h += buildDomainCard('conjunction', 'CONJUNCTION DATA', [
+          ['SAT 1', e.metadata?.sat1_name], ['SAT 1 ID', e.metadata?.sat1_id],
+          ['SAT 2', e.metadata?.sat2_name], ['SAT 2 ID', e.metadata?.sat2_id],
+          ['TCA', e.metadata?.tca],
+          ['MISS', e.metadata?.miss_distance_km ? e.metadata.miss_distance_km.toFixed(3) + ' km' : null],
+          ['PROB', e.metadata?.collision_probability ? e.metadata.collision_probability.toExponential(2) : null],
+          ['REL SPEED', e.metadata?.relative_speed ? e.metadata.relative_speed + ' km/s' : null],
+        ])
+      }
       if (e.entity_type === 'aircraft' || e.entity_type === 'military_air') {
         h += buildDomainCard('air', 'FLIGHT DATA', [
           ['CALLSIGN', e.metadata?.callsign], ['ICAO24', e.metadata?.icao24],
@@ -1375,7 +1457,7 @@
     var statItems = [
       ['AIR', (state.counts.aircraft || 0) + (state.counts.military || 0), '#00ccff'],
       ['SEA', (state.counts.fishing || 0) + (state.counts.darkships || 0) + (state.counts.ships || 0), '#00ff88'],
-      ['ORB', (state.counts.satellites || 0) + (state.counts.debris || 0), '#ffcc00'],
+      ['ORB', (state.counts.satellites || 0) + (state.counts.debris || 0) + (state.counts.conjunctions || 0), '#ffcc00'],
       ['WX', (state.counts.seismic || 0) + (state.counts.wildfires || 0) + (state.counts.weather || 0), '#4477ff'],
       ['INT', (state.counts.conflict || 0) + (state.counts.disasters || 0) + (state.counts.nuclear || 0), '#ff2200'],
       ['CYB', state.counts.cyber || 0, '#66ffcc'],
@@ -1587,6 +1669,26 @@
       } catch (e) { state.sourceHealth.cyber = 'error'; log('Cyber fetch error: ' + e, 'error') }
     }, state.isMobile ? 3000 : 2000)
 
+    // Phase 5b: Space-Track (deferred, authenticated)
+    setTimeout(async function () {
+      try {
+        var p5b = await Promise.allSettled([
+          getApi('/api/spacetrack/gp'),
+          getApi('/api/spacetrack/cdm'),
+        ])
+        if (p5b[0].status === 'fulfilled' && p5b[0].value?.events) {
+          replaceEntities(p5b[0].value.events.map(function (e) { return ce(e) }), 'stgp_')
+          log('Space-Track GP: ' + (p5b[0].value.count || 0) + ' satellites', 'info')
+        }
+        if (p5b[1].status === 'fulfilled' && p5b[1].value?.events) {
+          replaceEntities(p5b[1].value.events.map(function (e) { return ce(e) }), 'cdm_')
+          state.sourceHealth.conjunctions = p5b[1].value.count > 0 ? 'live' : 'loading'
+          if (p5b[1].value.count > 0) state.sourceFreshness.conjunctions = new Date().toISOString()
+          log('Space-Track CDM: ' + (p5b[1].value.count || 0) + ' conjunction alerts', 'info')
+        }
+      } catch (e) { log('Space-Track error: ' + e, 'error') }
+    }, state.isMobile ? 4000 : 2500)
+
     // Phase 6: GNSS + Social (most deferred)
     setTimeout(async function () {
       try {
@@ -1747,14 +1849,14 @@
   // BOOT SEQUENCE
   // ═══════════════════════════════════════════════════════════════
   function boot() {
-    console.log('%c SENTINEL OS v8.1 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px')
-    console.log('Global Situational Awareness Platform \u2014 20+ live OSINT layers')
+    console.log('%c SENTINEL OS v8.2 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px')
+    console.log('Global Situational Awareness Platform \u2014 25+ live OSINT layers | Space-Track + Copernicus + Cesium')
 
     updateViewportState()
     initMap()
     initKeyboard()
     renderUI()
-    log('SENTINEL OS v8.1 initialized', 'info')
+    log('SENTINEL OS v8.2 initialized', 'info')
 
     fetchAll()
     setTimeout(fetchCelesTrak, 3000)

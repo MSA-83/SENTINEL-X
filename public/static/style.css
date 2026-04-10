@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   SENTINEL OS v8.1 — Production Dark-Ops Interface
+   SENTINEL OS v8.2 — Production Dark-Ops Interface
    Design: Palantir Gotham / NATO COP / C2 Operations
 
    v8.1 Improvements:
@@ -407,6 +407,10 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 .air-card .card-header{color:rgba(0,204,255,0.5)}
 .seismic-card{border-color:rgba(255,238,0,0.15)}
 .seismic-card .card-header{color:rgba(255,238,0,0.5)}
+.conjunction-card{border-color:rgba(255,0,255,0.15)}
+.conjunction-card .card-header{color:rgba(255,0,255,0.5)}
+.maritime-card{border-color:rgba(0,255,136,0.15)}
+.maritime-card .card-header{color:rgba(0,255,136,0.5)}
 
 /* ── RAW METADATA TOGGLE ── */
 .rp-meta-toggle{

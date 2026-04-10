@@ -1,8 +1,15 @@
-# SENTINEL OS v8.1
+# SENTINEL OS v8.2
 
 ## Global Multi-Domain Situational Awareness Platform
 
-Production-grade, free-source-first situational awareness system aggregating **20+ live OSINT data sources** across aviation, maritime, orbital, seismic, wildfire, weather, conflict, disaster, cyber, nuclear, GNSS jamming, social media, and satellite imagery intelligence domains.
+Production-grade, free-source-first situational awareness system aggregating **25+ live OSINT data sources** across aviation, maritime, orbital, seismic, wildfire, weather, conflict, disaster, cyber, nuclear, GNSS jamming, social media, and satellite imagery intelligence domains.
+
+### v8.2 New Integrations
+- **Space-Track.org** — Authenticated GP/TLE satellite catalog (200 active payloads) + CDM conjunction data messages (collision warnings)
+- **Copernicus Sentinel Hub** — OAuth2 token proxy for hi-res Sentinel-2 L2A imagery (10m/px)
+- **Cesium ion** — Token proxy for 3D globe readiness
+- **Abuse.ch Auth** — Authenticated URLhaus + ThreatFox feeds (higher rate limits)
+- **Conjunction layer** — New SPACE domain layer showing satellite close-approach events with collision probability
 
 **Architecture**: Edge BFF (Backend-for-Frontend) on Cloudflare Pages. All keyed API calls route through server-side proxy -- the browser never sees secrets. Every record conforms to a canonical event schema with provenance, confidence metadata, and raw payload hashing for data lineage.
 
@@ -18,18 +25,21 @@ Browser (sentinel.js)
   |
   |--- Direct free APIs (USGS, ISS, CelesTrak TLE)
   |--- /api/proxy  --> Hono BFF --> Upstream keyed APIs (with recordMetric)
-  |--- /api/cyber/* --> CISA KEV, OTX, URLhaus, ThreatFox
+  |--- /api/cyber/* --> CISA KEV, OTX, URLhaus, ThreatFox (Abuse.ch auth key)
   |--- /api/gnss/*  --> Curated GNSS zones + GDELT enrichment
   |--- /api/social/* --> Reddit public JSON + Mastodon public timelines
   |--- /api/intel/*  --> GDELT article geocoding
   |--- /api/fusion/* --> Threat zones, viewport queries
   |--- /api/avwx/*  --> METAR weather (canonical events)
+  |--- /api/spacetrack/* --> GP satellite catalog, CDM conjunctions, SATCAT
+  |--- /api/copernicus/token --> Sentinel Hub OAuth2 token proxy
+  |--- /api/cesium/token --> Cesium ion token proxy
   |--- /api/metrics/health --> Source health metrics (wired to all fetches)
   |
   Leaflet map + SVG markers + MarkerCluster
   Inspector panel (compact cards with expand) + Threat board
   Domain-specific filter tabs + Search + Timestamp-aware replay
-  Satellite imagery (NASA GIBS + Sentinel-2)
+  Satellite imagery (NASA GIBS + Sentinel-2 + Copernicus SH)
   Mobile drawer panels + Performance throttles
 ```
 
@@ -45,6 +55,37 @@ Browser (sentinel.js)
 - **Deduplication**: Fingerprint-based dedup with cross-source correlation tracking
 - **Mobile-first**: Responsive drawer panels, performance throttles, marker caps
 - **Unified state**: Single `state` object tracks all map, UI, drawer, replay, viewport, and entity data
+
+## v8.2 Changes (from v8.1)
+
+### Space-Track.org Integration
+- **GP (General Perturbations)**: Authenticated queries for 200 latest active payload TLEs with full orbital metadata (inclination, period, apogee/perigee, mean motion, eccentricity)
+- **CDM (Conjunction Data Messages)**: Public conjunction data showing collision probability, miss distance, relative speed, and TCA (time of closest approach)
+- **Threat scoring**: Conjunction events scored by collision probability (>1e-3 = critical, >1e-5 = high)
+- **Cookie-based authentication**: Login + query in single flow for serverless compatibility
+
+### Copernicus Sentinel Hub
+- **OAuth2 token proxy**: Server generates short-lived access token using client credentials flow
+- **Sentinel-2 L2A WMS tiles**: 10m/px true-color imagery with cloud filtering (maxcc=30%)
+- **Integrated into satellite panel**: Appears alongside NASA GIBS products with date picker
+
+### Cesium Ion
+- **Token proxy endpoint**: `/api/cesium/token` serves the Cesium ion access token
+- **3D globe readiness**: Frontend infrastructure ready for CesiumJS integration
+
+### Abuse.ch Authenticated Feeds
+- **URLhaus**: Auth-Key header injected for higher rate limits and priority access
+- **ThreatFox**: Auth-Key header injected for enhanced IOC data retrieval
+
+### New Conjunction Layer
+- New `conjunctions` layer in SPACE domain (default off, toggle-able)
+- Inspector cards show SAT1/SAT2 names, miss distance, collision probability, TCA
+- Events appear in threat board when collision probability is elevated
+
+### Backend Enhancements
+- 6 new environment bindings: `ABUSECH_AUTH_KEY`, `SPACETRACK_USER`, `SPACETRACK_PASS`, `COPERNICUS_CLIENT_ID`, `COPERNICUS_CLIENT_SECRET`, `CESIUM_ION_TOKEN`
+- Source metrics now track 18 layer groups including conjunctions
+- `/api/status` displays all 18 key configurations
 
 ## v8.1 Changes (from v8.0)
 
