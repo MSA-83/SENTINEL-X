@@ -1391,9 +1391,9 @@ app.get('/', (c) => {
   if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',loadNext)}
   else{loadNext()}
 })();
-<\/script>
+</script>
 </body>
-</html>`)
+</html>`)  
 })
 
 export default app
