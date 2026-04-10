@@ -10,7 +10,7 @@ app.get('/', (c) => {
   })
 })
 
-app.get('/intel/feed', async (c) => {
+app.get('/intel/feed', (c) => {
   return c.json({
     feeds: [],
     message: 'Fusion engine placeholder'
