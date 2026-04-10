@@ -29,3 +29,12 @@ Thumbs.db
 
 # Uploaded files (dev artifacts)
 upload_files/
+
+# Vite environment files (can leak secrets)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Temp patch scripts
+/tmp/
