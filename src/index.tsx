@@ -76,7 +76,7 @@ interface CanonicalEvent {
 }
 
 /** Compute a fast hash for provenance chain integrity */
-async function hashPayload(data: unknown): Promise<string> {
+export async function hashPayload(data: unknown): Promise<string> {
   try {
     const text = typeof data === 'string' ? data : JSON.stringify(data)
     const buf = new TextEncoder().encode(text.slice(0, 4096))
@@ -85,7 +85,7 @@ async function hashPayload(data: unknown): Promise<string> {
   } catch { return '0000000000000000' }
 }
 
-function evt(partial: Partial<CanonicalEvent> & { id: string; entity_type: string; source: string; title: string }): CanonicalEvent {
+export function evt(partial: Partial<CanonicalEvent> & { id: string; entity_type: string; source: string; title: string }): CanonicalEvent {
   return {
     source_url: '',
     description: '',
@@ -105,7 +105,7 @@ function evt(partial: Partial<CanonicalEvent> & { id: string; entity_type: strin
   }
 }
 
-function upstreamError(upstream: string, status: number, message: string) {
+export function upstreamError(upstream: string, status: number, message: string) {
   return {
     _upstream_error: true,
     upstream,
@@ -239,7 +239,7 @@ const GEO_DB: Record<string, { lat: number; lon: number; region: string }> = {
 }
 
 /** Match text against GEO_DB. Returns low-confidence inferred location. */
-function geocodeFromText(text: string): { lat: number; lon: number; region: string; matched: string; confidence: number } | null {
+export function geocodeFromText(text: string): { lat: number; lon: number; region: string; matched: string; confidence: number } | null {
   const lower = text.toLowerCase()
   let best: { key: string; entry: typeof GEO_DB[string] } | null = null
   let bestLen = 0
@@ -258,7 +258,7 @@ function geocodeFromText(text: string): { lat: number; lon: number; region: stri
 // ═══════════════════════════════════════════════════════════════════════════════
 // SAFE FETCH HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
-async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 12000): Promise<Response> {
+const safeFetch = async (url: string, opts: RequestInit = {}, timeoutMs = 12000): Promise<Response> => {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -272,7 +272,7 @@ async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 12000)
   }
 }
 
-async function safeJson(url: string, opts: RequestInit = {}, timeoutMs = 12000): Promise<any> {
+export async function safeJson(url: string, opts: RequestInit = {}, timeoutMs = 12000): Promise<any> {
   const res = await safeFetch(url, opts, timeoutMs)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
@@ -488,7 +488,7 @@ let spaceTrackLoginError = ''
  *  Step 1: POST credentials to /ajaxauth/login -> get chocolatechip cookie
  *  Step 2: Use cookie for data queries
  *  Rate limit: 30 req/min, 300 req/hour */
-async function spaceTrackQuery(user: string, pass: string, queryUrl: string): Promise<Response | null> {
+const spaceTrackQuery = async (user: string, pass: string, queryUrl: string): Promise<Response | null> => {
   // Reuse cached session cookie (valid ~2 hours)
   if (spaceTrackCookie && Date.now() < spaceTrackCookieExpiry) {
     try {
@@ -772,7 +772,7 @@ app.get('/api/acled/events', async (c) => {
 // GDELT CONFLICT INTEL — Article-based geocoding
 // Free, no key: https://api.gdeltproject.org/
 // ═══════════════════════════════════════════════════════════════════════════════
-async function fetchGDELT(url: string): Promise<any> {
+export async function fetchGDELT(url: string): Promise<any> {
   for (let i = 0; i < 2; i++) {
     try {
       if (i > 0) await new Promise(r => setTimeout(r, 2000))
@@ -1240,7 +1240,7 @@ const sourceMetricsStore: Record<string, {
   last_status: 'live' | 'error' | 'loading'
 }> = {}
 
-function recordMetric(source: string, latencyMs: number, success: boolean) {
+const recordMetric = (source: string, latencyMs: number, success: boolean) => {
   if (!sourceMetricsStore[source]) {
     sourceMetricsStore[source] = { latency_ms: 0, uptime_pct: 100, last_success: '', error_count: 0, total_requests: 0, last_status: 'loading' }
   }
@@ -1256,7 +1256,7 @@ function recordMetric(source: string, latencyMs: number, success: boolean) {
     m.last_status = 'error'
   }
   m.uptime_pct = m.total_requests > 0 ? Math.round((1 - m.error_count / m.total_requests) * 100) : 100
-}
+};
 
 app.get('/api/metrics/health', (c) => {
   const sources: Record<string, unknown> = {}
