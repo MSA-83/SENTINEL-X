@@ -1,8 +1,9 @@
 /**
- * SENTINEL OS v8.2 — Global Multi-Domain Situational Awareness Platform
+ * SENTINEL OS v8.3 — Global Multi-Domain Situational Awareness Platform
  * Secure Edge BFF (Backend-for-Frontend) on Cloudflare Pages
  *
- * v8.2: Space-Track, Copernicus Sentinel Hub, Cesium ion, Abuse.ch auth
+ * v8.3: Space-Track auth hardening, improved dedup/correlation, mobile bottom-sheet inspector,
+ *        domain-specific cards for all entity types, quick actions in inspector
  *
  * Architecture:
  *   - All keyed API calls route through server-side proxy — browser NEVER sees secrets
@@ -42,7 +43,7 @@ type Bindings = {
 const app = new Hono<{ Bindings: Bindings }>()
 app.use('/api/*', cors())
 
-const VERSION = '8.2.0'
+const VERSION = '8.3.0'
 const UA = `SENTINEL-OS/${VERSION} (OSINT Platform)`
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -481,41 +482,44 @@ app.get('/api/ais/config', (c) => {
 let spaceTrackCookie = ''
 let spaceTrackCookieExpiry = 0
 
-/** Space-Track: combined login+query in a single POST.
- *  Space-Track supports a combined form where you POST the query URL as a
- *  parameter alongside credentials. If that fails, fall back to a two-step
- *  cookie-based approach. Cloudflare Workers have full cookie support via
- *  getSetCookie(). */
+let spaceTrackLoginError = ''
+
+/** Space-Track: two-step cookie-based authentication.
+ *  Step 1: POST credentials to /ajaxauth/login -> get chocolatechip cookie
+ *  Step 2: Use cookie for data queries
+ *  Rate limit: 30 req/min, 300 req/hour */
 async function spaceTrackQuery(user: string, pass: string, queryUrl: string): Promise<Response | null> {
-  // Approach 1: Reuse cached session cookie
+  // Reuse cached session cookie (valid ~2 hours)
   if (spaceTrackCookie && Date.now() < spaceTrackCookieExpiry) {
     try {
       const dataRes = await safeFetch(queryUrl, {
         headers: { Cookie: spaceTrackCookie, 'User-Agent': UA },
       }, 18000)
       if (dataRes.ok) return dataRes
-      // Cookie expired or invalid, fall through to re-auth
+      // Cookie expired or invalid — re-authenticate
       spaceTrackCookie = ''
       spaceTrackCookieExpiry = 0
     } catch { /* re-authenticate */ }
   }
 
-  // Approach 2: Login + query via two-step with proper cookie extraction
+  // Login
   try {
     const loginRes = await fetch('https://www.space-track.org/ajaxauth/login', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': UA,
-      },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
       body: `identity=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`,
-      redirect: 'manual',  // Don't follow redirects — capture cookie first
     })
 
-    // Extract cookie — try multiple methods for Workers compatibility
-    let cookie = ''
+    // Check for login errors in response body
+    const loginBody = await loginRes.text()
+    if (loginBody.includes('Failed') || loginBody.includes('does not meet') || loginBody.includes('Invalid') || loginBody.includes('disabled')) {
+      spaceTrackLoginError = loginBody.replace(/[{}"]/g, '').trim().slice(0, 200)
+      return null
+    }
 
-    // Method 1: getSetCookie() — available in Cloudflare Workers
+    // Extract cookie
+    let cookie = ''
+    // Method 1: getSetCookie() — Cloudflare Workers native
     try {
       const cookies = (loginRes.headers as any).getSetCookie?.() || []
       for (const c of cookies) {
@@ -524,65 +528,31 @@ async function spaceTrackQuery(user: string, pass: string, queryUrl: string): Pr
       }
     } catch { /* noop */ }
 
-    // Method 2: Fallback to set-cookie header (may be joined)
+    // Method 2: set-cookie header
     if (!cookie) {
       const setCookieHeader = loginRes.headers.get('set-cookie') || ''
       const match = setCookieHeader.match(/chocolatechip=([^;]+)/)
       if (match) cookie = `chocolatechip=${match[1]}`
     }
 
-    // Method 3: Check response body for session indicator and retry without redirect:manual
     if (!cookie) {
-      // Some proxies strip set-cookie; try normal follow and check for cookie in login body
-      try {
-        const loginRes2 = await fetch('https://www.space-track.org/ajaxauth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
-          body: `identity=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`,
-        })
-        // Check for cookies in second response
-        try {
-          const cookies2 = (loginRes2.headers as any).getSetCookie?.() || []
-          for (const c of cookies2) {
-            const m = c.match(/chocolatechip=([^;]+)/)
-            if (m) { cookie = `chocolatechip=${m[1]}`; break }
-          }
-        } catch { /* noop */ }
-        if (!cookie) {
-          const sc2 = loginRes2.headers.get('set-cookie') || ''
-          const m2 = sc2.match(/chocolatechip=([^;]+)/)
-          if (m2) cookie = `chocolatechip=${m2[1]}`
-        }
-      } catch { /* noop */ }
-    }
-
-    if (!cookie) {
-      // Last resort: try the combined login+query approach
-      // Space-Track's ajaxauth/login endpoint can be followed by a query in the URL
-      try {
-        const combinedRes = await fetch('https://www.space-track.org/ajaxauth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
-          body: `identity=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}&query=${encodeURIComponent(queryUrl)}`,
-        })
-        if (combinedRes.ok) {
-          const ct = combinedRes.headers.get('content-type') || ''
-          if (ct.includes('json') || ct.includes('text')) return combinedRes
-        }
-      } catch { /* noop */ }
+      spaceTrackLoginError = 'Login succeeded but no session cookie received'
       return null
     }
 
-    // Cache the cookie for reuse (~58 minutes)
+    spaceTrackLoginError = ''
     spaceTrackCookie = cookie
-    spaceTrackCookieExpiry = Date.now() + 3500000
+    spaceTrackCookieExpiry = Date.now() + 7200000 // 2 hours
 
-    // Step 2: Use cookie for actual query
+    // Query data
     const dataRes = await safeFetch(queryUrl, {
       headers: { Cookie: cookie, 'User-Agent': UA },
     }, 18000)
     return dataRes
-  } catch { return null }
+  } catch (e) {
+    spaceTrackLoginError = String(e)
+    return null
+  }
 }
 
 app.get('/api/spacetrack/gp', async (c) => {
@@ -593,7 +563,11 @@ app.get('/api/spacetrack/gp', async (c) => {
   try {
     const url = 'https://www.space-track.org/basicspacedata/query/class/gp/OBJECT_TYPE/PAYLOAD/DECAY_DATE/null-val/EPOCH/%3Enow-7/orderby/NORAD_CAT_ID%20asc/limit/200/format/json'
     const res = await spaceTrackQuery(user, pass, url)
-    if (!res || !res.ok) { recordMetric('spacetrack', Date.now() - t0, false); return c.json(upstreamError('spacetrack', res?.status || 0, 'GP query failed')) }
+    if (!res || !res.ok) {
+      recordMetric('spacetrack', Date.now() - t0, false)
+      const errMsg = spaceTrackLoginError || `GP query failed (HTTP ${res?.status || 0})`
+      return c.json(upstreamError('spacetrack', res?.status || 401, errMsg))
+    }
     const data = await res.json() as any[]
     const h = await hashPayload(data)
     const events: CanonicalEvent[] = (data || []).slice(0, 150).map((gp: any, i: number) => {
@@ -634,7 +608,11 @@ app.get('/api/spacetrack/cdm', async (c) => {
   try {
     const url = 'https://www.space-track.org/basicspacedata/query/class/cdm_public/CREATION_DATE/%3Enow-2/orderby/TCA%20desc/limit/50/format/json'
     const res = await spaceTrackQuery(user, pass, url)
-    if (!res || !res.ok) { recordMetric('spacetrack_cdm', Date.now() - t0, false); return c.json(upstreamError('spacetrack', res?.status || 0, 'CDM query failed')) }
+    if (!res || !res.ok) {
+      recordMetric('spacetrack_cdm', Date.now() - t0, false)
+      const errMsg = spaceTrackLoginError || `CDM query failed (HTTP ${res?.status || 0})`
+      return c.json(upstreamError('spacetrack', res?.status || 401, errMsg))
+    }
     const data = await res.json() as any[]
     const h = await hashPayload(data)
     const events: CanonicalEvent[] = (data || []).slice(0, 40).map((cdm: any, i: number) => {
@@ -665,6 +643,17 @@ app.get('/api/spacetrack/cdm', async (c) => {
     recordMetric('spacetrack_cdm', Date.now() - t0, false)
     return c.json(upstreamError('spacetrack', 0, String(error)))
   }
+})
+
+// Space-Track diagnostic
+app.get('/api/spacetrack/status', (c) => {
+  return c.json({
+    configured: !!(c.env.SPACETRACK_USER && c.env.SPACETRACK_PASS),
+    authenticated: !!(spaceTrackCookie && Date.now() < spaceTrackCookieExpiry),
+    cookie_expires: spaceTrackCookieExpiry > 0 ? new Date(spaceTrackCookieExpiry).toISOString() : null,
+    last_error: spaceTrackLoginError || null,
+    note: 'Space-Track requires minimum 12-character password. Update at https://www.space-track.org/auth/passwordReset',
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════

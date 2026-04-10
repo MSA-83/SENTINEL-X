@@ -1,5 +1,5 @@
 /**
- * SENTINEL OS v8.2 — Global Situational Awareness Client
+ * SENTINEL OS v8.3 — Global Situational Awareness Client
  *
  * Refactored for:
  *   1. Stable unified state object (S.state)
@@ -248,10 +248,14 @@
   function fingerprint(e) {
     var parts = [e.entity_type || '']
     if (e.lat != null && e.lon != null) {
-      parts.push(Math.round(e.lat * 10) / 10)
-      parts.push(Math.round(e.lon * 10) / 10)
+      // Higher resolution for precise sources (aircraft, seismic), lower for inferred
+      var precision = (e.provenance === 'geocoded-inferred' || e.confidence < 50) ? 1 : 10
+      parts.push(Math.round(e.lat * precision) / precision)
+      parts.push(Math.round(e.lon * precision) / precision)
     }
-    parts.push((e.title || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40))
+    // Normalize title: lowercase, strip punctuation, limit length
+    var normTitle = (e.title || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim().slice(0, 50)
+    parts.push(normTitle)
     return parts.join('|')
   }
 
@@ -260,15 +264,37 @@
     newEntities.forEach(function (e) {
       var fp = fingerprint(e)
       if (state.dedupeIndex[fp]) {
-        var existing = state.entities.find(function (x) { return x.id === state.dedupeIndex[fp] })
-        if (existing && e.confidence > existing.confidence) {
-          existing.confidence = e.confidence
-          existing.correlations = (existing.correlations || []).concat([e.id]).slice(0, 10)
+        var existingId = state.dedupeIndex[fp]
+        var existing = state.entities.find(function (x) { return x.id === existingId })
+        if (existing) {
+          // Merge strategy: higher confidence wins; accumulate correlations
+          if (e.confidence > existing.confidence) {
+            existing.confidence = e.confidence
+            existing.provenance = e.provenance
+          }
+          // Promote severity upward
+          var sevRank = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
+          if ((sevRank[e.severity] || 4) < (sevRank[existing.severity] || 4)) {
+            existing.severity = e.severity
+          }
+          // Fresher timestamp wins
+          if (e.timestamp && (!existing.timestamp || e.timestamp > existing.timestamp)) {
+            existing.timestamp = e.timestamp
+            existing.observed_at = e.observed_at || e.timestamp
+          }
+          // Track correlated sources
+          existing.correlations = (existing.correlations || []).concat([e.id]).slice(0, 15)
           if (e.source !== existing.source) {
             existing.metadata._correlated_sources = existing.metadata._correlated_sources || []
             if (existing.metadata._correlated_sources.indexOf(e.source) < 0) {
               existing.metadata._correlated_sources.push(e.source)
             }
+          }
+          // Merge any unique tags
+          if (e.tags) {
+            e.tags.forEach(function (t) {
+              if (t && existing.tags.indexOf(t) < 0) existing.tags.push(t)
+            })
           }
         }
       } else {
@@ -1368,7 +1394,19 @@
       // Compact summary
       h += '<div class="rp-summary">' + esc(e.source) + ' \u00B7 ' + esc(e.region || 'Global')
       if (e.lat != null) h += ' \u00B7 ' + e.lat.toFixed(2) + ',' + e.lon.toFixed(2)
+      if (e.metadata?._correlated_sources?.length > 0) {
+        h += '<div style="margin-top:3px;font-size:7px;color:var(--purple)">CORRELATED: ' + e.metadata._correlated_sources.map(esc).join(', ') + '</div>'
+      }
       h += '</div>'
+
+      // Quick actions
+      if (e.lat != null && e.lon != null) {
+        h += '<div class="rp-actions">'
+        h += '<a class="rp-action-btn" href="https://www.google.com/maps?q=' + e.lat + ',' + e.lon + '" target="_blank" rel="noopener">\uD83C\uDF0D MAP</a>'
+        if (e.source_url) h += '<a class="rp-action-btn" href="' + esc(e.source_url) + '" target="_blank" rel="noopener">\uD83D\uDD17 SOURCE</a>'
+        h += '<span class="rp-action-btn" onclick="navigator.clipboard.writeText(\'' + e.lat.toFixed(4) + ', ' + e.lon.toFixed(4) + '\');this.textContent=\'\\u2713 COPIED\';setTimeout(function(){this.textContent=\'\\uD83D\\uDCCB COORDS\'}.bind(this),1200)">\uD83D\uDCCB COORDS</span>'
+        h += '</div>'
+      }
 
       // Expand/collapse
       h += '<div class="rp-expand-btn" onclick="S._toggleExpand()">' + (state.inspectorExpanded ? 'COLLAPSE DETAILS \u25B2' : 'SHOW DETAILS \u25BC') + '</div>'
@@ -1434,6 +1472,39 @@
           ['VERT', e.metadata?.vert_rate ? e.metadata.vert_rate + ' m/s' : null],
         ])
       }
+      if (e.entity_type === 'weather' && e.metadata?.temp_c != null) {
+        h += buildDomainCard('metar', 'WEATHER OBSERVATION', [
+          ['TEMP', e.metadata.temp_c + ' \u00B0C'],
+          ['WIND', e.metadata?.wind_speed ? e.metadata.wind_speed + ' m/s @ ' + (e.metadata?.wind_deg || '?') + '\u00B0' : null],
+          ['PRESSURE', e.metadata?.pressure ? e.metadata.pressure + ' hPa' : null],
+          ['HUMIDITY', e.metadata?.humidity ? e.metadata.humidity + '%' : null],
+          ['CLOUDS', e.metadata?.clouds ? e.metadata.clouds + '%' : null],
+        ])
+      }
+      if (e.entity_type === 'fishing_vessel' || e.entity_type === 'dark_vessel' || e.entity_type === 'ship') {
+        h += buildDomainCard('maritime', 'VESSEL DATA', [
+          ['MMSI', e.metadata?.mmsi], ['FLAG', e.metadata?.flag],
+          ['GEAR', e.metadata?.gear_type],
+          ['GAP', e.metadata?.gap_hours ? e.metadata.gap_hours + ' hours' : null],
+        ])
+      }
+      if (e.entity_type === 'satellite') {
+        h += buildDomainCard('conjunction', 'ORBITAL DATA', [
+          ['NORAD', e.metadata?.norad_id], ['INTL DES', e.metadata?.intl_designator || e.metadata?.int_designator],
+          ['COUNTRY', e.metadata?.country],
+          ['TYPE', e.metadata?.object_type], ['RCS', e.metadata?.rcs_size],
+          ['PERIOD', e.metadata?.period_min ? e.metadata.period_min.toFixed(1) + ' min' : null],
+          ['INCL', e.metadata?.inclination ? e.metadata.inclination.toFixed(1) + '\u00B0' : null],
+          ['APO/PER', (e.metadata?.apogee_km && e.metadata?.perigee_km) ? e.metadata.apogee_km.toFixed(0) + '/' + e.metadata.perigee_km.toFixed(0) + ' km' : null],
+        ])
+      }
+      if (e.entity_type === 'wildfire') {
+        h += buildDomainCard('seismic', 'FIRE DATA', [
+          ['FRP', e.metadata?.frp ? e.metadata.frp + ' MW' : null],
+          ['BRIGHTNESS', e.metadata?.brightness],
+          ['ACQ DATE', e.metadata?.acq_date],
+        ])
+      }
 
       // Raw metadata toggle
       if (e.metadata && Object.keys(e.metadata).length > 0) {
@@ -1472,9 +1543,13 @@
 
     // ── MOBILE BAR ──
     h += '<div class="mob-bar">'
-    ;[['layers', '\u2630 LAYERS'], ['threat', '\u26A0 THREAT'], ['sources', '\u2139 LOGS']].forEach(function (pair) {
+    ;[['layers', '\u2630 LAYERS'], ['threat', '\u26A0 THREAT'], ['sources', '\u2139 HEALTH']].forEach(function (pair) {
       h += '<div class="mob-tab' + (state.panel === pair[0] ? ' active' : '') + '" onclick="S._mobPanel(\'' + pair[0] + '\')">' + pair[1] + '</div>'
     })
+    // Inspector shortcut on mobile
+    if (state.selected) {
+      h += '<div class="mob-tab mob-tab-inspect active" onclick="S._mobInspect()">\uD83D\uDD0D INSPECT</div>'
+    }
     h += '</div>'
 
     document.getElementById('hud').innerHTML = h
@@ -1831,7 +1906,19 @@
     _replaySpeed: cycleReplaySpeed,
     _toggleDrawer: function () { state.drawerOpen ? closeDrawer() : openDrawer('left') },
     _closeDrawer: closeDrawer,
-    _mobPanel: function (p) { state.panel = p; state.drawerOpen = true; renderUI() },
+    _mobPanel: function (p) { state.panel = p; state.drawerOpen = true; state.drawerSide = 'left'; renderUI() },
+    _mobInspect: function () {
+      // On mobile, scroll to inspector panel
+      if (state.selected) {
+        state.drawerOpen = false
+        renderUI()
+        // Scroll inspector into view if needed
+        setTimeout(function () {
+          var rp = document.querySelector('.rp')
+          if (rp) rp.scrollTop = 0
+        }, 50)
+      }
+    },
     // Expose state for debugging (production builds can remove this)
     _state: state,
   }
@@ -1849,14 +1936,14 @@
   // BOOT SEQUENCE
   // ═══════════════════════════════════════════════════════════════
   function boot() {
-    console.log('%c SENTINEL OS v8.2 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px')
+    console.log('%c SENTINEL OS v8.3 ', 'background:#00ff88;color:#020a12;font-weight:bold;font-size:14px;padding:4px 8px;border-radius:3px')
     console.log('Global Situational Awareness Platform \u2014 25+ live OSINT layers | Space-Track + Copernicus + Cesium')
 
     updateViewportState()
     initMap()
     initKeyboard()
     renderUI()
-    log('SENTINEL OS v8.2 initialized', 'info')
+    log('SENTINEL OS v8.3 initialized', 'info')
 
     fetchAll()
     setTimeout(fetchCelesTrak, 3000)
