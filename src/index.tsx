@@ -841,25 +841,27 @@ app.get('/api/cyber/cisa-kev', async (c) => {
     'https://raw.githubusercontent.com/cisagov/kev-data/main/known_exploited_vulnerabilities.json',
     'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json',
   ]
-  for (const url of urls) {
-    try {
-      data = await safeJson('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', {}, 15000)
-    } catch {
-      // Mirror fallback
-      data = await safeJson('https://raw.githubusercontent.com/cisagov/known-exploited-vulnerabilities/main/data/known_exploited_vulnerabilities.json', {}, 12000)
+  try {
+    for (const url of urls) {
+      try {
+        data = await safeJson('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', {}, 15000)
+      } catch {
+        // Mirror fallback
+        data = await safeJson('https://raw.githubusercontent.com/cisagov/known-exploited-vulnerabilities/main/data/known_exploited_vulnerabilities.json', {}, 12000)
+      }
+      const vulns = (data.vulnerabilities || []).slice(0, 100)
+      const events: CanonicalEvent[] = vulns.map((v: any, i: number) => evt({
+        id: `kev_${v.cveID || i}`, entity_type: 'cyber_vulnerability',
+        source: 'CISA KEV', source_url: `https://nvd.nist.gov/vuln/detail/${v.cveID}`,
+        title: `${v.cveID}: ${v.vulnerabilityName || 'Unknown'}`,
+        description: v.shortDescription || '',
+        timestamp: v.dateAdded || '', severity: 'high', risk_score: 75,
+        confidence: 95, tags: ['cisa-kev', 'known-exploited', v.vendorProject || '', v.product || ''].filter(Boolean),
+      provenance: 'direct-api',
+        metadata: { cve_id: v.cveID, vendor: v.vendorProject, product: v.product, required_action: v.requiredAction, due_date: v.dueDate, known_ransomware: v.knownRansomwareCampaignUse }
+      }))
+      return c.json({ events, count: events.length, catalog_date: data.catalogVersion, source: 'cisa-kev' })
     }
-    const vulns = (data.vulnerabilities || []).slice(0, 100)
-    const events: CanonicalEvent[] = vulns.map((v: any, i: number) => evt({
-      id: `kev_${v.cveID || i}`, entity_type: 'cyber_vulnerability',
-      source: 'CISA KEV', source_url: `https://nvd.nist.gov/vuln/detail/${v.cveID}`,
-      title: `${v.cveID}: ${v.vulnerabilityName || 'Unknown'}`,
-      description: v.shortDescription || '',
-      timestamp: v.dateAdded || '', severity: 'high', risk_score: 75,
-      confidence: 95, tags: ['cisa-kev', 'known-exploited', v.vendorProject || '', v.product || ''].filter(Boolean),
-    provenance: 'direct-api',
-      metadata: { cve_id: v.cveID, vendor: v.vendorProject, product: v.product, required_action: v.requiredAction, due_date: v.dueDate, known_ransomware: v.knownRansomwareCampaignUse }
-    }))
-    return c.json({ events, count: events.length, catalog_date: data.catalogVersion, source: 'cisa-kev' })
   } catch (error) { return c.json(upstreamError('cisa-kev', 0, String(error))) }
 })
 
