@@ -577,7 +577,7 @@ app.get('/api/spacetrack/gp', async (c) => {
       return evt({
         id: `stgp_${gp.NORAD_CAT_ID || i}`, entity_type: 'satellite',
         source: 'Space-Track.org', source_url: 'https://www.space-track.org/',
-        title: (gp.OBJECT_NAME || 'NORAD:' + gp.NORAD_CAT_ID).trim(),
+        title: (gp.OBJECT_NAME || `NORAD:${gp.NORAD_CAT_ID}`).trim(),
         description: `${gp.OBJECT_TYPE || 'PAYLOAD'} | ${gp.COUNTRY_CODE || '??'} | Period: ${period.toFixed(1)} min`,
         altitude: Math.round((apogee + perigee) / 2), confidence: 98, severity: 'info',
         tags: ['satellite', 'space-track', gp.COUNTRY_CODE || ''].filter(Boolean),
@@ -797,7 +797,7 @@ app.post('/api/intel/gdelt', async (c) => {
     if (!data) return c.json({ events: [], _upstream_error: true, message: 'GDELT unavailable or rate-limited' })
     const articles = data.articles || []
     const h = await hashPayload(data)
-    recordMetric('gdelt_' + (category || 'conflict'), Date.now() - Date.now(), articles.length > 0)
+    recordMetric(`gdelt_${category || 'conflict'}`, Date.now() - Date.now(), articles.length > 0)
     const events: CanonicalEvent[] = articles.map((art: any, i: number) => {
       const geo = geocodeFromText(art.title || '')
       if (!geo) return null
