@@ -1,0 +1,28 @@
+# SENTINEL OS dev vars template - copy to .dev.vars and fill in keys
+
+# Free with registration:
+NASA_FIRMS_KEY=your_firms_key_here
+OWM_KEY=your_openweathermap_key_here
+N2YO_KEY=your_n2yo_key_here
+NEWS_API_KEY=your_newsapi_key_here
+RAPIDAPI_KEY=your_rapidapi_key_here
+OTX_KEY=your_alienvault_otx_key_here
+SHODAN_KEY=your_shodan_key_here
+ACLED_KEY=your_acled_key_here
+ACLED_EMAIL=your_acled_email_here
+AISSTREAM_KEY=your_aisstream_key_here
+ABUSECH_KEY=your_abusech_key_here
+SPACETRACK_USER=your_spacetrack_username
+SPACETRACK_PASS=your_spacetrack_password
+CESIUM_TOKEN=your_cesium_ion_token_here
+
+# Free with GFW account:
+GFW_TOKEN=your_globalfishingwatch_bearer_token
+
+# Copernicus (free EU Copernicus account):
+COPERNICUS_CLIENT_ID=your_copernicus_client_id
+COPERNICUS_CLIENT_SECRET=your_copernicus_client_secret
+
+# Commercial (optional):
+PLANET_API_KEY=your_planet_labs_api_key
+AVWX_KEY=your_avwx_key_here
