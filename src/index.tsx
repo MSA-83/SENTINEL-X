@@ -510,7 +510,7 @@ const spaceTrackQuery = async (user: string, pass: string, queryUrl: string): Pr
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
       body: `identity=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`,
     })
-
+const spaceTrackQuery = async (/* parameters */) => {
     // Check for login errors in response body
     const loginBody = await loginRes.text()
     const loginErrorMap: Record<string, string> = {
