@@ -416,20 +416,23 @@ app.get('/api/weather/global', async (c) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** Map WMO weather-code → a human-readable description */
-function wmoCodeToDescription(code: number): string {
-  if (code === 0) return 'Clear sky'
-  if (code <= 2) return 'Partly cloudy'
-  if (code === 3) return 'Overcast'
-  if (code <= 9) return 'Fog / Depositing rime fog'
-  if (code <= 19) return 'Drizzle'
-  if (code <= 29) return 'Rain'
-  if (code <= 39) return 'Snow'
-  if (code <= 49) return 'Freezing rain'
-  if (code <= 59) return 'Rain showers'
-  if (code <= 69) return 'Snow showers'
-  if (code <= 79) return 'Thunderstorm'
-  if (code <= 89) return 'Heavy thunderstorm'
-  return 'Unknown'
+export function wmoCodeToDescription(code: number): string {
+  const wmoRanges: { max: number; desc: string }[] = [
+    { max: 0, desc: 'Clear sky' },
+    { max: 2, desc: 'Partly cloudy' },
+    { max: 3, desc: 'Overcast' },
+    { max: 9, desc: 'Fog / Depositing rime fog' },
+    { max: 19, desc: 'Drizzle' },
+    { max: 29, desc: 'Rain' },
+    { max: 39, desc: 'Snow' },
+    { max: 49, desc: 'Freezing rain' },
+    { max: 59, desc: 'Rain showers' },
+    { max: 69, desc: 'Snow showers' },
+    { max: 79, desc: 'Thunderstorm' },
+    { max: 89, desc: 'Heavy thunderstorm' },
+  ];
+  const match = wmoRanges.find(range => code <= range.max);
+  return match ? match.desc : 'Unknown';
 }
 
 app.get('/api/weather/openmeteo', async (c) => {
@@ -437,44 +440,51 @@ app.get('/api/weather/openmeteo', async (c) => {
     const results = await Promise.allSettled(
       WEATHER_CITIES.map(city => {
         const url =
-          `https://api.open-meteo.com/v1/forecast` +
+          'https://api.open-meteo.com/v1/forecast' +
           `?latitude=${city.lat}&longitude=${city.lon}` +
-          `&current=temperature_2m,wind_speed_10m,wind_direction_10m,` +
-          `relative_humidity_2m,apparent_temperature,precipitation,weather_code` +
-          `&timezone=auto`
-        return safeJson(url, {}, 8000).then(d => ({ ...d, _city: city.name, _lat: city.lat, _lon: city.lon }))
+          '&current=temperature_2m,wind_speed_10m,wind_direction_10m,' +
+          'relative_humidity_2m,apparent_temperature,precipitation,weather_code' +
+          '&timezone=auto'
+        return safeJson(url, {}, 8000).then(weatherData => ({ ...weatherData, _city: city.name, _lat: city.lat, _lon: city.lon }))
       })
     )
 
     const events: CanonicalEvent[] = results
-      .filter(r => r.status === 'fulfilled' && (r as PromiseFulfilledResult<any>).value?.current)
-      .map((r, i) => {
-        const d = (r as PromiseFulfilledResult<any>).value
-        const cur = d.current
-        const code = cur.weather_code ?? 0
-        const desc = wmoCodeToDescription(code)
-        const windSpd: number = cur.wind_speed_10m ?? 0
+      .filter((result): result is PromiseFulfilledResult<unknown> => {
+        if (result.status !== 'fulfilled') {
+          return false;
+        }
+        const value = (result as PromiseFulfilledResult<unknown>).value;
+        return typeof value === 'object' && value !== null && 'current' in value && Boolean((value as { current?: unknown }).current);
+      })
+        const windSpd: number = currentWeather.wind_speed_10m ?? 0
         // Severity heuristics: heavy precipitation or strong winds
-        const severity = windSpd > 60 ? 'critical' : windSpd > 40 ? 'high' : windSpd > 20 ? 'medium' : 'low'
+        const severityLabels = [
+          { threshold: 60, label: 'critical' },
+          { threshold: 40, label: 'high' },
+          { threshold: 20, label: 'medium' },
+          { threshold: 0, label: 'low' },
+        ]
+        const severity = severityLabels.find(item => windSpd > item.threshold)!.label
         return evt({
-          id: `openmeteo_${d._city.toLowerCase().replace(/\s+/g, '_')}_${i}`,
+          id: `openmeteo_${weatherData._city.toLowerCase().replace(/\s+/g, '_')}_${eventIndex}`,
           entity_type: 'weather_observation',
           source: 'Open-Meteo',
           source_url: 'https://open-meteo.com/',
-          title: `${d._city}: ${desc}, ${cur.temperature_2m}°C`,
-          description: `Wind ${windSpd} km/h ${cur.wind_direction_10m}°, Humidity ${cur.relative_humidity_2m}%, Feels like ${cur.apparent_temperature}°C, Precipitation ${cur.precipitation} mm`,
-          lat: d._lat,
-          lon: d._lon,
-          region: GEO_DB[d._city.toLowerCase()]?.region || '',
-          timestamp: cur.time || new Date().toISOString(),
-          observed_at: cur.time || new Date().toISOString(),
+          title: `${weatherData._city}: ${desc}, ${currentWeather.temperature_2m}°C`,
+          description: `Wind ${windSpd} km/h ${currentWeather.wind_direction_10m}°, Humidity ${currentWeather.relative_humidity_2m}%, Feels like ${currentWeather.apparent_temperature}°C, Precipitation ${currentWeather.precipitation} mm`,
+          lat: weatherData._lat,
+          lon: weatherData._lon,
+          region: GEO_DB[weatherData._city.toLowerCase()]?.region || '',
+          timestamp: currentWeather.time || new Date().toISOString(),
+          observed_at: currentWeather.time || new Date().toISOString(),
           confidence: 90,
           severity,
-          risk_score: Math.min(100, Math.round(windSpd * 0.8 + (cur.precipitation ?? 0) * 2)),
+          risk_score: Math.min(100, Math.round(windSpd * 0.8 + (currentWeather.precipitation ?? 0) * 2)),
           tags: ['weather', 'open-meteo', desc.toLowerCase().replace(/\s+/g, '-')],
           provenance: 'direct-api',
           metadata: {
-            temperature_2m: cur.temperature_2m,
+            temperature_2m: currentWeather.temperature_2m,
             apparent_temperature: cur.apparent_temperature,
             wind_speed_10m: windSpd,
             wind_direction_10m: cur.wind_direction_10m,
@@ -1099,22 +1109,38 @@ app.get('/api/gnss/anomalies', async (c) => {
   try {
     const heatmapData = await safeJson('https://gpsjam.org/api/v1/heatmap', {}, 8000)
     if (heatmapData && Array.isArray(heatmapData.data)) {
+      const entityTypeMap: Record<number, string> = {
+        0: 'gnss_anomaly',
+        1: 'gnss_anomaly',
+        2: 'gnss_anomaly',
+        3: 'gnss_jamming',
+        4: 'gnss_jamming',
+        5: 'gnss_jamming'
+      }
+      const severityMap: Record<number, string> = {
+        0: 'medium',
+        1: 'medium',
+        2: 'medium',
+        3: 'medium',
+        4: 'high',
+        5: 'high'
+      }
       gpsjamEvents = heatmapData.data
-        .filter((pt: any) => pt.lat !== undefined && pt.lon !== undefined && (pt.level ?? 0) > 1)
+        .filter((pt: { lat?: number; lon?: number; level?: number }) => pt.lat !== undefined && pt.lon !== undefined && (pt.level ?? 0) > 1)
         .slice(0, 50)
-        .map((pt: any, i: number) => evt({
+        .map((pt: { level?: number; lat: number; lon: number; time?: string }, i: number) => evt({
           id: `gpsjam_live_${i}`,
-          entity_type: pt.level >= 3 ? 'gnss_jamming' : 'gnss_anomaly',
+          entity_type: entityTypeMap[pt.level ?? 0],
           source: 'GPSJam.org (live heatmap)',
           source_url: 'https://gpsjam.org/',
           title: `GPSJam Live: interference level ${pt.level ?? '?'} at (${pt.lat.toFixed(2)}, ${pt.lon.toFixed(2)})`,
-          description: `ADS-B derived GNSS interference. Level ${pt.level ?? '?'}/5.`,
+          description: `ADS-B derived GNSS interference. Level ${pt.level ?? '?'} /5.`,
           lat: pt.lat,
           lon: pt.lon,
           timestamp: pt.time || new Date().toISOString(),
           observed_at: pt.time || new Date().toISOString(),
           confidence: 60,
-          severity: (pt.level ?? 0) >= 4 ? 'high' : 'medium',
+          severity: severityMap[pt.level ?? 0],
           risk_score: Math.min(100, (pt.level ?? 1) * 20),
           tags: ['gnss-live', 'gpsjam', 'adsb-derived'],
           provenance: 'direct-api',
@@ -1222,7 +1248,7 @@ app.get('/api/social/reddit', async (c) => {
   mastoResults.forEach(r => { if (r.status === 'fulfilled') allEvents.push(...r.value) })
 
   const allEvents: CanonicalEvent[] = []
-  const results = await Promise.allSettled(
+  const _results = await Promise.allSettled(
     subs.map(sub =>
       safeFetch(`https://www.reddit.com/r/${sub.name}/hot.json?limit=15&raw_json=1`, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SentinelOS/7.0; +https://github.com/MSA-83/SENTINEL-X)' }
@@ -1310,11 +1336,28 @@ app.get('/api/social/mastodon', async (c) => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`)
           return r.json()
         })
-        .then((statuses: any[]) => {
-          return statuses.map((s: any, i: number) => {
+        .then((statuses: { content: string; id?: string | number; url?: string }[]) => {
+          return statuses.map((s: { content: string; id?: string | number; url?: string }, i: number) => {
             // Strip HTML tags from content for plain text
             const plainText = (s.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
             const geo = geocodeFromText(plainText)
+            const geoFields = geo
+              ? {
+                  lat: geo.lat,
+                  lon: geo.lon,
+                  region: geo.region || '',
+                  confidence: geo.confidence,
+                  provenance: 'geocoded-inferred',
+                  geolocation_method: 'text-inference',
+                }
+              : {
+                  lat: null,
+                  lon: null,
+                  region: '',
+                  confidence: 0,
+                  provenance: 'no-location',
+                  geolocation_method: 'none',
+                }
             return evt({
               id: `mastodon_${feed.instance}_${feed.tag}_${s.id || i}`,
               entity_type: 'social_post',
@@ -1322,15 +1365,15 @@ app.get('/api/social/mastodon', async (c) => {
               source_url: s.url || `https://${feed.instance}`,
               title: plainText.slice(0, 160) || `#${feed.tag} post`,
               description: plainText,
-              lat: geo?.lat ?? null,
-              lon: geo?.lon ?? null,
-              region: geo?.region || '',
+              lat: geoFields.lat,
+              lon: geoFields.lon,
+              region: geoFields.region,
               timestamp: s.created_at || new Date().toISOString(),
               observed_at: s.created_at || new Date().toISOString(),
-              confidence: geo ? geo.confidence : 0,
+              confidence: geoFields.confidence,
               severity: 'info',
-              tags: [feed.tag, 'mastodon', ...(s.tags || []).map((t: any) => t.name || '').filter(Boolean)].slice(0, 10),
-              provenance: geo ? 'geocoded-inferred' : 'no-location',
+              tags: [feed.tag, 'mastodon', ...(s.tags || []).map((t: { name: string }) => t.name || '').filter(Boolean)].slice(0, 10),
+              provenance: geoFields.provenance,
               metadata: {
                 instance: feed.instance,
                 hashtag: feed.tag,
@@ -1339,9 +1382,9 @@ app.get('/api/social/mastodon', async (c) => {
                 replies_count: s.replies_count || 0,
                 reblogs_count: s.reblogs_count || 0,
                 favourites_count: s.favourites_count || 0,
-                media_attachments: (s.media_attachments || []).map((m: any) => ({ type: m.type, url: m.url || m.remote_url || '' })).slice(0, 3),
+                media_attachments: (s.media_attachments || []).map((m: { type: string; url?: string; remote_url?: string }) => ({ type: m.type, url: m.url || m.remote_url || '' })).slice(0, 3),
                 matched_location: geo?.matched || null,
-                geolocation_method: geo ? 'text-inference' : 'none',
+                geolocation_method: geoFields.geolocation_method,
               },
             })
           }).filter(Boolean) as CanonicalEvent[]
@@ -1412,18 +1455,10 @@ app.get('/api/fusion/viewport', (c) => {
   // Apply since filter — for curated static zones we treat their effective
   // "observed_at" as the server start time. Dynamic data pipelines should
   // attach their own timestamps.
-  if (since) {
-    try {
-      const sinceDate = new Date(since)
-      if (!isNaN(sinceDate.getTime())) {
-        const serverStartDate = new Date(SERVER_START)
-        // If since is after server start the static zones have no "new" data
-        if (sinceDate > serverStartDate) {
-          visible = []
-        }
-        // Otherwise all visible zones qualify (they were "loaded" at server start)
-      }
-    } catch { /* ignore invalid since param */ }
+  const sinceMs = since ? Date.parse(since) : NaN
+  const serverStartMs = Date.parse(SERVER_START)
+  if (!isNaN(sinceMs) && sinceMs > serverStartMs) {
+    visible = []
   }
 
   return c.json({
