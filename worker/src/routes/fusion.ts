@@ -6,7 +6,7 @@ import { calculateRisk } from '../fusion/risk'
 const fusion = new Hono()
 const engine = new FusionEngine()
 
-fusion.get('/snapshot', async (c) => {
+fusion.get('/snapshot', (c) => {
   // simulate ingestion
   const adsb = normalizeADSB([
     { id: 'FLIGHT-1', lat: 52.37, lon: 4.89, altitude: 900 }

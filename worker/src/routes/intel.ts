@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 const intel = new Hono()
 
 // Simulated OSINT feeds (replace with real APIs later)
-intel.get('/adsb', async (c) => {
+intel.get('/adsb', (c) => {
   return c.json({
     source: 'ADS-B',
     data: [
@@ -13,7 +13,7 @@ intel.get('/adsb', async (c) => {
   })
 })
 
-intel.get('/ais', async (c) => {
+intel.get('/ais', (c) => {
   return c.json({
     source: 'AIS',
     data: [
@@ -23,7 +23,7 @@ intel.get('/ais', async (c) => {
   })
 })
 
-intel.get('/events', async (c) => {
+intel.get('/events', (c) => {
   return c.json({
     source: 'GDELT',
     events: [
