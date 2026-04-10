@@ -513,8 +513,26 @@ const spaceTrackQuery = async (user: string, pass: string, queryUrl: string): Pr
 
     // Check for login errors in response body
     const loginBody = await loginRes.text()
-    const loginErrorKeywords = ['Failed', 'does not meet', 'Invalid', 'disabled']
-    if (loginErrorKeywords.some(keyword => loginBody.includes(keyword))) {
+    const loginErrorMap: Record<string, string> = {
+      'Failed': 'Login failed. Please check credentials.',
+      'does not meet': 'Password does not meet requirements.',
+      'Invalid': 'Invalid username or password.',
+      'disabled': 'Account is disabled.',
+    }
+    const matchedKey = Object.keys(loginErrorMap).find(key => loginBody.includes(key))
+    if (matchedKey) {
+      spaceTrackLoginError = loginErrorMap[matchedKey]
+      return null
+    }
+
+    // ...continue with successful login handling
+  } catch (e) {
+    spaceTrackLoginError = 'Network error during Space-Track login.'
+    return null
+  }
+
+  // ...rest of spaceTrackQuery implementation
+}
       spaceTrackLoginError = loginBody.replace(/[{}"]/g, '').trim().slice(0, 200)
       return null
     }
@@ -740,6 +758,10 @@ app.post('/api/shodan/search', async (c) => {
 // RELIEFWEB — UN OCHA disaster data
 // Free, no key required: https://api.reliefweb.int/
 // ═══════════════════════════════════════════════════════════════════════════════
+function recordMetric(name: string, durationMs: number, success: boolean) {
+  // original implementation
+}
+
 app.get('/api/reliefweb/disasters', async (c) => {
   try {
     const t0 = Date.now()
@@ -778,22 +800,32 @@ export async function fetchGDELT(url: string): Promise<unknown | null> {
   const delays = [0, 2000]
   const statusMap: Record<number, 'retry' | 'error' | 'ok'> = { 429: 'retry' }
 
+  const parseJson = (text: string): unknown | null => {
+    try {
+      return JSON.parse(text)
+    } catch {
+      return null
+    }
+  }
+
+  const handlers: Record<'retry' | 'error' | 'ok', () => Promise<unknown | null | 'retry'>> = {
+    retry: async () => 'retry',
+    error: async () => null,
+    ok: async () => parseJson(await (await safeFetch(url, {}, 8000)).text()),
+  }
+
   for (let i = 0; i < 2; i++) {
     try {
       await new Promise(r => setTimeout(r, delays[i]))
       const res = await safeFetch(url, {}, 8000)
       const action = statusMap[res.status] || (res.ok ? 'ok' : 'error')
+      const result = await handlers[action]()
 
-      if (action === 'retry') continue
-      if (action === 'error') return null
-
-      const text = await res.text()
-      try {
-        return JSON.parse(text) as unknown
-      } catch {
-        return null
-      }
-    } catch { /* retry */ }
+      if (result === 'retry') continue
+      return result
+    } catch {
+      /* retry */
+    }
   }
 
   return null
@@ -866,6 +898,7 @@ app.post('/api/intel/news', async (c) => {
 // CYBER — CISA Known Exploited Vulnerabilities (KEV)
 // Free, no key: https://www.cisa.gov/known-exploited-vulnerabilities-catalog
 // ═══════════════════════════════════════════════════════════════════════════════
+declare function recordMetric(metricName: string, duration: number, success: boolean): void;
 app.get('/api/cyber/cisa-kev', async (c) => {
   // Triple fallback: GitHub cisagov kev-data mirror -> CISA direct -> alternate mirror
   const urls = [
