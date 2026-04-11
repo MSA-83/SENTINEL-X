@@ -718,3 +718,47 @@ body{background:var(--bg);color:var(--t2);font-family:var(--mono);overflow:hidde
 @media(prefers-reduced-motion:reduce){
   *{animation-duration:0.01ms!important;transition-duration:0.01ms!important}
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   INTEL OVERVIEW PANEL (v8.5 — right-click multi-domain intelligence)
+   ══════════════════════════════════════════════════════════════════ */
+.intel-panel{
+  position:fixed;top:70px;right:calc(var(--rp-w) + 10px);z-index:480;
+  width:290px;max-height:60vh;overflow-y:auto;
+  background:rgba(4,14,24,0.97);border:1px solid var(--brd);border-radius:4px;
+  backdrop-filter:blur(12px);animation:fadeIn 0.15s ease;
+  box-shadow:0 4px 24px rgba(0,0,0,0.5);
+}
+.intel-panel::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(0,212,255,0.3),transparent)}
+.intel-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:8px 12px;border-bottom:1px solid var(--brd);
+  font-size:8px;letter-spacing:2px;color:var(--cyan);
+}
+.intel-close{cursor:pointer;color:var(--t3);font-size:10px;padding:2px 6px;border:1px solid var(--brd);border-radius:2px;transition:all 0.15s}
+.intel-close:hover{color:var(--red);border-color:var(--red)}
+.intel-coords{padding:4px 12px;font-size:7.5px;color:var(--t3);letter-spacing:0.5px;border-bottom:1px solid var(--brd)}
+.intel-section{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:6px 12px;border-bottom:1px solid rgba(4,14,24,0.5);
+  font-size:8px;
+}
+.intel-sec-title{color:var(--t2);font-size:8px;letter-spacing:0.5px}
+.intel-sec-val{color:var(--t1);font-size:8.5px;font-weight:500}
+
+/* METAR popup styling */
+.metar-popup .leaflet-popup-content-wrapper{background:rgba(4,14,24,0.95)!important;color:var(--t1)!important;border:1px solid var(--brd)!important;border-radius:4px!important;box-shadow:0 4px 16px rgba(0,0,0,0.6)!important}
+.metar-popup .leaflet-popup-tip{background:rgba(4,14,24,0.95)!important;border:1px solid var(--brd)!important}
+.metar-popup .leaflet-popup-close-button{color:var(--t3)!important;font-size:14px!important}
+.metar-popup .leaflet-popup-close-button:hover{color:var(--red)!important}
+
+/* EONET natural_event card */
+.eonet-card{border-color:rgba(255,119,51,0.15)}
+.eonet-card .card-header{color:rgba(255,119,51,0.5)}
+
+/* ══════════════════════════════════════════════════════════════════
+   MOBILE OVERRIDES FOR NEW PANELS
+   ══════════════════════════════════════════════════════════════════ */
+@media(max-width:767px){
+  .intel-panel{right:8px!important;left:8px!important;width:auto!important;top:55px!important}
+}

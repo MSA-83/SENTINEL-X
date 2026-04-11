@@ -43,7 +43,18 @@ type Bindings = {
 const app = new Hono<{ Bindings: Bindings }>()
 app.use('/api/*', cors())
 
-const VERSION = '8.3.0'
+// ═══════════════════════════════════════════════════════════════════════════════
+// REQUEST-ID TRACING — unique ID per request for debugging/observability
+// ═══════════════════════════════════════════════════════════════════════════════
+app.use('*', async (c, next) => {
+  const requestId = crypto.randomUUID().slice(0, 8)
+  c.set('requestId' as any, requestId)
+  await next()
+  c.header('X-Request-ID', requestId)
+  c.header('X-Powered-By', 'SENTINEL-OS')
+})
+
+const VERSION = '8.5.0'
 const UA = `SENTINEL-OS/${VERSION} (OSINT Platform)`
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -253,6 +264,61 @@ function geocodeFromText(text: string): { lat: number; lon: number; region: stri
   const jitter = () => (Math.random() - 0.5) * 1.2
   const confidence = Math.min(35, 15 + bestLen * 2)
   return { lat: best.entry.lat + jitter(), lon: best.entry.lon + jitter(), region: best.entry.region, matched: best.key, confidence }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RESPONSE CACHE — TTL-based in-memory cache (inspired by V4 AVWX adapter)
+// Prevents redundant upstream calls for data that changes slowly (SIGMETs, KEV)
+// ═══════════════════════════════════════════════════════════════════════════════
+interface CacheEntry { data: any; ts: number; ttl: number }
+const responseCache: Record<string, CacheEntry> = {}
+
+function cacheGet(key: string): any | null {
+  const entry = responseCache[key]
+  if (!entry) return null
+  if (Date.now() - entry.ts > entry.ttl) { delete responseCache[key]; return null }
+  return entry.data
+}
+
+function cacheSet(key: string, data: any, ttlMs: number) {
+  responseCache[key] = { data, ts: Date.now(), ttl: ttlMs }
+  // Evict stale entries (cap at 100)
+  const keys = Object.keys(responseCache)
+  if (keys.length > 100) {
+    const now = Date.now()
+    for (const k of keys) { if (now - responseCache[k].ts > responseCache[k].ttl) delete responseCache[k] }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CIRCUIT BREAKER — stops calling dead upstreams (inspired by V4 adapter patterns)
+// After N consecutive failures, open circuit for cooldown period
+// ═══════════════════════════════════════════════════════════════════════════════
+interface CircuitState { failures: number; lastFailure: number; open: boolean }
+const circuits: Record<string, CircuitState> = {}
+const CB_THRESHOLD = 5      // failures before opening
+const CB_COOLDOWN = 120000  // 2 minutes
+
+function circuitCheck(source: string): boolean {
+  const s = circuits[source]
+  if (!s || !s.open) return true // closed = allow
+  if (Date.now() - s.lastFailure > CB_COOLDOWN) {
+    s.open = false; s.failures = 0; return true // half-open, try again
+  }
+  return false // open = deny
+}
+
+function circuitSuccess(source: string) {
+  const s = circuits[source]
+  if (s) { s.failures = 0; s.open = false }
+}
+
+function circuitFailure(source: string) {
+  if (!circuits[source]) circuits[source] = { failures: 0, lastFailure: 0, open: false }
+  const s = circuits[source]
+  s.failures++
+  s.lastFailure = Date.now()
+  if (s.failures >= CB_THRESHOLD) s.open = true
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1270,6 +1336,7 @@ app.get('/api/metrics/health', (c) => {
     conflict: ['gdelt_conflict', 'acled'], disasters: ['gdacs', 'reliefweb'],
     nuclear: ['gdelt_nuclear'], cyber: ['cisa_kev', 'otx', 'urlhaus', 'threatfox'],
     gnss: ['gnss'], social: ['reddit', 'mastodon'],
+    sigmets: ['avwx_sigmet'], eonet: ['eonet'], shodan_geo: ['shodan_geo'],
   }
 
   for (const [layerKey, srcKeys] of Object.entries(layerSources)) {
@@ -1306,6 +1373,475 @@ app.get('/api/metrics/health', (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// AVWX SIGMET — Aviation hazard overlays (V4 pattern: cached 10 min)
+// Requires: AVWX_KEY — Returns active SIGMETs globally (turbulence, icing, volcanic ash, etc.)
+// Adapted from V4 AVWX adapter with TTL caching
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/avwx/sigmets', async (c) => {
+  const key = c.env.AVWX_KEY
+  if (!key) return c.json(upstreamError('avwx', 0, 'AVWX_KEY not configured'))
+  
+  const hazard = c.req.query('hazard') || ''
+  const cacheKey = `sigmets:${hazard || 'all'}`
+  const cached = cacheGet(cacheKey)
+  if (cached) return c.json({ ...cached, _cached: true })
+  
+  if (!circuitCheck('avwx_sigmet')) return c.json(upstreamError('avwx', 0, 'AVWX SIGMET circuit open — too many failures'))
+  
+  const t0 = Date.now()
+  try {
+    const params = hazard ? `?hazard=${hazard.toUpperCase()}` : ''
+    const data = await safeJson(`https://avwx.rest/api/sigmet${params}`, {
+      headers: { 'Authorization': `Bearer ${key}` }
+    }, 10000)
+    
+    const sigmets = (Array.isArray(data) ? data : data.sigmets || []).slice(0, 50)
+    const h = await hashPayload(data)
+    
+    const events: CanonicalEvent[] = sigmets.map((s: any, i: number) => {
+      const coords = s.coords || s.coordinates || []
+      // Try to extract a centroid from the polygon coords
+      let lat: number | null = null, lon: number | null = null
+      if (coords.length > 0) {
+        const lats = coords.map((c: number[]) => c[1] || c[0]).filter((v: number) => v)
+        const lons = coords.map((c: number[]) => c[0] || c[1]).filter((v: number) => v)
+        if (lats.length > 0) { lat = lats.reduce((a: number, b: number) => a + b, 0) / lats.length; lon = lons.reduce((a: number, b: number) => a + b, 0) / lons.length }
+      }
+      
+      const hazardType = s.hazard || 'UNKNOWN'
+      const severity = hazardType === 'VA' || hazardType === 'TC' ? 'critical' : hazardType === 'TURB' || hazardType === 'ICE' ? 'high' : 'medium'
+      
+      return evt({
+        id: `sigmet_${i}_${(s.raw || '').slice(0, 16)}`,
+        entity_type: 'sigmet',
+        source: 'AVWX SIGMET',
+        source_url: 'https://avwx.rest/',
+        title: `SIGMET: ${hazardType}${s.qualifier ? ' ' + s.qualifier : ''} — ${s.fir || 'Global'}`,
+        description: s.raw || `${hazardType} hazard`,
+        lat, lon,
+        confidence: 92,
+        severity,
+        risk_score: severity === 'critical' ? 80 : severity === 'high' ? 60 : 40,
+        tags: ['sigmet', hazardType.toLowerCase(), s.fir || ''].filter(Boolean),
+        provenance: 'direct-api',
+        raw_payload_hash: h,
+        metadata: {
+          hazard: hazardType, qualifier: s.qualifier,
+          flight_levels: { lower: s.altitude?.min, upper: s.altitude?.max },
+          valid_from: typeof s.start_time === 'object' ? s.start_time?.repr : s.start_time,
+          valid_to: typeof s.end_time === 'object' ? s.end_time?.repr : s.end_time,
+          issuing_office: s.issuing_office, fir: s.fir,
+          coords, raw: s.raw,
+        },
+      })
+    })
+    
+    const result = { events, count: events.length, source: 'avwx-sigmet', raw_payload_hash: h }
+    cacheSet(cacheKey, result, 600000) // Cache 10 min (SIGMETs change hourly)
+    recordMetric('avwx_sigmet', Date.now() - t0, true)
+    circuitSuccess('avwx_sigmet')
+    return c.json(result)
+  } catch (error) {
+    recordMetric('avwx_sigmet', Date.now() - t0, false)
+    circuitFailure('avwx_sigmet')
+    return c.json(upstreamError('avwx', 0, String(error)))
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AVWX METAR BY COORDINATE — Nearest stations + parallel fetch (V4 pattern)
+// Finds N nearest airport weather stations to a lat/lon and returns all METARs
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/avwx/near', async (c) => {
+  const key = c.env.AVWX_KEY
+  if (!key) return c.json(upstreamError('avwx', 0, 'AVWX_KEY not configured'))
+  
+  const lat = parseFloat(c.req.query('lat') || '0')
+  const lon = parseFloat(c.req.query('lon') || '0')
+  const limit = Math.min(parseInt(c.req.query('limit') || '5'), 10)
+  
+  if (lat === 0 && lon === 0) return c.json(upstreamError('avwx', 400, 'lat and lon query params required'))
+  
+  const cacheKey = `metar_near:${lat.toFixed(1)}_${lon.toFixed(1)}`
+  const cached = cacheGet(cacheKey)
+  if (cached) return c.json({ ...cached, _cached: true })
+  
+  const t0 = Date.now()
+  const headers = { 'Authorization': `Bearer ${key}` }
+  
+  try {
+    // Step 1: Find nearest stations (V4 pattern)
+    const stationData = await safeJson(
+      `https://avwx.rest/api/station/near/${lat.toFixed(4)},${lon.toFixed(4)}?n=${limit}&maxdist=200`,
+      { headers }, 8000
+    )
+    
+    const stations = (Array.isArray(stationData) ? stationData : [])
+      .filter((s: any) => s?.station?.icao)
+      .slice(0, limit)
+    
+    if (stations.length === 0) return c.json({ stations: [], metars: [], count: 0, source: 'avwx-near' })
+    
+    // Step 2: Fetch all METARs concurrently (V4 asyncio.gather pattern)
+    const icaoCodes = stations.map((s: any) => s.station.icao)
+    const metarResults = await Promise.allSettled(
+      icaoCodes.map((icao: string) =>
+        safeJson(`https://avwx.rest/api/metar/${icao}?format=json&onfail=cache`, { headers }, 6000)
+      )
+    )
+    
+    const metars = metarResults
+      .filter(r => r.status === 'fulfilled' && (r as any).value?.station)
+      .map(r => (r as PromiseFulfilledResult<any>).value)
+    
+    const stationInfo = stations.map((s: any) => ({
+      icao: s.station.icao, name: s.station.name,
+      lat: s.station.latitude, lon: s.station.longitude,
+      elevation_m: s.station.elevation_m, distance_km: s.distance,
+    }))
+    
+    const result = { stations: stationInfo, metars, count: metars.length, source: 'avwx-near' }
+    cacheSet(cacheKey, result, 300000) // 5 min cache for METARs
+    recordMetric('avwx_near', Date.now() - t0, true)
+    return c.json(result)
+  } catch (error) {
+    recordMetric('avwx_near', Date.now() - t0, false)
+    return c.json(upstreamError('avwx', 0, String(error)))
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NASA EONET — Natural hazard events with spatial bbox filter (V4 pattern)
+// Free, no key required. Provides volcanoes, storms, wildfires, floods, etc.
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/eonet/events', async (c) => {
+  const lat = parseFloat(c.req.query('lat') || '0')
+  const lon = parseFloat(c.req.query('lon') || '0')
+  const radiusKm = parseFloat(c.req.query('radius') || '0')
+  const days = parseInt(c.req.query('days') || '30')
+  const limit = Math.min(parseInt(c.req.query('limit') || '50'), 200)
+  
+  const cacheKey = radiusKm > 0 ? `eonet:${lat.toFixed(0)}_${lon.toFixed(0)}_${radiusKm}` : 'eonet:global'
+  const cached = cacheGet(cacheKey)
+  if (cached) return c.json({ ...cached, _cached: true })
+  
+  if (!circuitCheck('eonet')) return c.json(upstreamError('eonet', 0, 'NASA EONET circuit open'))
+  
+  const t0 = Date.now()
+  try {
+    let url = `https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=${limit}`
+    if (days > 0) url += `&days=${days}`
+    
+    // V4 pattern: server-side bbox filter for spatial queries
+    if (radiusKm > 0 && lat !== 0) {
+      const KM_PER_DEG = 111.0
+      const deltaLat = radiusKm / KM_PER_DEG
+      const deltaLon = radiusKm / (KM_PER_DEG * Math.cos(lat * Math.PI / 180))
+      const minLon = Math.max(lon - deltaLon, -180)
+      const minLat = Math.max(lat - deltaLat, -90)
+      const maxLon = Math.min(lon + deltaLon, 180)
+      const maxLat = Math.min(lat + deltaLat, 90)
+      url += `&bbox=${minLon.toFixed(4)},${minLat.toFixed(4)},${maxLon.toFixed(4)},${maxLat.toFixed(4)}`
+    }
+    
+    const data = await safeJson(url, {}, 15000)
+    const rawEvents = data.events || []
+    const h = await hashPayload(data)
+    
+    const events: CanonicalEvent[] = rawEvents.map((e: any, i: number) => {
+      // EONET v3 uses "geometry" (singular), newest entry is LAST in array
+      const geometries = e.geometry || e.geometries || []
+      const latest = geometries.length > 0 ? geometries[geometries.length - 1] : {}
+      const coords = latest.coordinates
+      let eLat: number | null = null, eLon: number | null = null
+      
+      if (coords && latest.type === 'Point' && coords.length >= 2) {
+        eLon = coords[0]; eLat = coords[1] // EONET uses [lon, lat]
+      }
+      
+      const categories = (e.categories || []).map((c: any) => c.title || c.id)
+      const catSlug = categories[0]?.toLowerCase() || ''
+      const severity = catSlug.includes('volcan') ? 'high' : catSlug.includes('severe') || catSlug.includes('cyclone') ? 'high' : catSlug.includes('fire') ? 'medium' : 'low'
+      
+      return evt({
+        id: `eonet_${e.id || i}`,
+        entity_type: 'natural_event',
+        source: 'NASA EONET',
+        source_url: e.link || 'https://eonet.gsfc.nasa.gov/',
+        title: e.title || 'Natural Event',
+        description: `Categories: ${categories.join(', ')}`,
+        lat: eLat, lon: eLon,
+        timestamp: latest.date || '',
+        confidence: 90,
+        severity,
+        tags: ['eonet', ...categories.map((c: string) => c.toLowerCase().replace(/\s+/g, '-'))],
+        provenance: 'direct-api',
+        raw_payload_hash: h,
+        metadata: {
+          eonet_id: e.id, categories, category_ids: (e.categories || []).map((c: any) => c.id),
+          geometry_type: latest.type, geometry_date: latest.date,
+          magnitude_value: latest.magnitudeValue, magnitude_unit: latest.magnitudeUnit,
+          source_links: (e.sources || []).map((s: any) => ({ id: s.id, url: s.url })),
+          geometry_count: geometries.length,
+        },
+      })
+    }).filter((e: CanonicalEvent) => e.lat !== null)
+    
+    const result = { events, count: events.length, total_raw: rawEvents.length, source: 'nasa-eonet', raw_payload_hash: h }
+    cacheSet(cacheKey, result, 300000) // 5 min cache
+    recordMetric('eonet', Date.now() - t0, true)
+    circuitSuccess('eonet')
+    return c.json(result)
+  } catch (error) {
+    recordMetric('eonet', Date.now() - t0, false)
+    circuitFailure('eonet')
+    return c.json(upstreamError('eonet', 0, String(error)))
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHODAN GEO SEARCH — Find exposed systems near a coordinate (V4 pattern)
+// + Host intel enrichment + Exploit lookup
+// ═══════════════════════════════════════════════════════════════════════════════
+app.post('/api/shodan/geo', async (c) => {
+  const key = c.env.SHODAN_KEY
+  if (!key) return c.json(upstreamError('shodan', 0, 'SHODAN_KEY not set'))
+  
+  const { lat, lon, radius_km, query: extraQuery } = await c.req.json<{
+    lat?: number; lon?: number; radius_km?: number; query?: string
+  }>().catch(() => ({ lat: undefined, lon: undefined, radius_km: undefined, query: undefined }))
+  
+  if (!lat || !lon) return c.json(upstreamError('shodan', 400, 'lat and lon required in request body'))
+  
+  const radius = Math.min(radius_km || 50, 500)
+  const geoFilter = `geo:${lat.toFixed(4)},${lon.toFixed(4)},${radius}`
+  const fullQuery = extraQuery ? `${geoFilter} ${extraQuery}` : geoFilter
+  
+  const cacheKey = `shodan_geo:${lat.toFixed(1)}_${lon.toFixed(1)}_${radius}`
+  const cached = cacheGet(cacheKey)
+  if (cached) return c.json({ ...cached, _cached: true })
+  
+  const t0 = Date.now()
+  try {
+    const data = await safeJson(
+      `https://api.shodan.io/shodan/host/search?key=${key}&query=${encodeURIComponent(fullQuery)}&minify=true&page=1`,
+      {}, 12000
+    )
+    const matches = (data.matches || []).slice(0, 50)
+    const h = await hashPayload(data)
+    
+    const events: CanonicalEvent[] = matches.map((m: any, i: number) => {
+      const mLat = m.location?.latitude || 0
+      const mLon = m.location?.longitude || 0
+      const vulns = Object.keys(m.vulns || {})
+      const severity = vulns.length > 5 ? 'critical' : vulns.length > 0 ? 'high' : 'medium'
+      
+      return evt({
+        id: `shodan_geo_${m.ip_str || i}_${m.port || 0}`,
+        entity_type: 'cyber_host',
+        source: 'Shodan Geo',
+        source_url: `https://www.shodan.io/host/${m.ip_str}`,
+        title: `${m.ip_str}:${m.port} — ${m.product || m.org || 'Unknown'}`,
+        description: `${m.org || ''} | ${m.location?.country_name || ''} | CVEs: ${vulns.length}`,
+        lat: mLat, lon: mLon,
+        confidence: 90, severity,
+        risk_score: Math.min(100, 30 + vulns.length * 10),
+        tags: ['shodan', 'geo-search', ...(m.cpe || []).slice(0, 3), ...vulns.slice(0, 3)],
+        provenance: 'direct-api',
+        raw_payload_hash: h,
+        metadata: {
+          ip: m.ip_str, port: m.port, org: m.org,
+          product: m.product, version: m.version,
+          country: m.location?.country_name, city: m.location?.city,
+          cpe: m.cpe || [], vulns, timestamp: m.timestamp,
+        },
+      })
+    })
+    
+    const result = { events, count: events.length, total: data.total || 0, source: 'shodan-geo', raw_payload_hash: h }
+    cacheSet(cacheKey, result, 180000) // 3 min cache
+    recordMetric('shodan_geo', Date.now() - t0, true)
+    return c.json(result)
+  } catch (error) {
+    recordMetric('shodan_geo', Date.now() - t0, false)
+    return c.json(upstreamError('shodan', 0, String(error)))
+  }
+})
+
+// Shodan host intel — V4 pattern: per-IP enrichment
+app.get('/api/shodan/host/:ip', async (c) => {
+  const key = c.env.SHODAN_KEY
+  if (!key) return c.json(upstreamError('shodan', 0, 'SHODAN_KEY not set'))
+  
+  const ip = c.req.param('ip')
+  const cacheKey = `shodan_host:${ip}`
+  const cached = cacheGet(cacheKey)
+  if (cached) return c.json({ ...cached, _cached: true })
+  
+  try {
+    const data = await safeJson(`https://api.shodan.io/shodan/host/${ip}?key=${key}`, {}, 10000)
+    const result = {
+      ip: data.ip_str, org: data.org, country: data.country_name, city: data.city,
+      isp: data.isp, asn: data.asn, os: data.os,
+      open_ports: data.ports || [],
+      vulns: Object.keys(data.vulns || {}),
+      last_update: data.last_update,
+      hostnames: data.hostnames || [],
+      tags: data.tags || [],
+      services: (data.data || []).slice(0, 10).map((s: any) => ({
+        port: s.port, transport: s.transport, product: s.product, version: s.version,
+      })),
+      source: 'shodan-host',
+    }
+    cacheSet(cacheKey, result, 300000) // 5 min
+    return c.json(result)
+  } catch (error) { return c.json(upstreamError('shodan', 0, String(error))) }
+})
+
+// Shodan exploit lookup — V4 pattern: CVE enrichment
+app.get('/api/shodan/exploits/:cve', async (c) => {
+  const key = c.env.SHODAN_KEY
+  if (!key) return c.json(upstreamError('shodan', 0, 'SHODAN_KEY not set'))
+  
+  const cve = c.req.param('cve')
+  const cacheKey = `shodan_exploit:${cve}`
+  const cached = cacheGet(cacheKey)
+  if (cached) return c.json({ ...cached, _cached: true })
+  
+  try {
+    const data = await safeJson(`https://exploits.shodan.io/api/search?query=${cve}&key=${key}`, {}, 10000)
+    const exploits = (data.matches || []).slice(0, 20).map((e: any) => ({
+      id: e._id, title: (e.description || '').slice(0, 200),
+      type: e.type, platform: e.platform, cve: e.cve || [],
+      source: 'shodan-exploits',
+    }))
+    const result = { exploits, count: exploits.length, total: data.total || 0, source: 'shodan-exploits' }
+    cacheSet(cacheKey, result, 600000) // 10 min
+    return c.json(result)
+  } catch (error) { return c.json(upstreamError('shodan', 0, String(error))) }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INTEL OVERVIEW — Multi-domain concurrent fan-out for a geographic area (V4 pattern)
+// Single endpoint that queries all relevant sources simultaneously
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/intel/overview', async (c) => {
+  const lat = parseFloat(c.req.query('lat') || '0')
+  const lon = parseFloat(c.req.query('lon') || '0')
+  const radiusKm = parseFloat(c.req.query('radius') || '250')
+  const domainsParam = c.req.query('domains') || 'weather,aviation,natural,cyber'
+  const domains = new Set(domainsParam.split(',').map(d => d.trim().toLowerCase()))
+  
+  if (lat === 0 && lon === 0) return c.json(upstreamError('intel', 400, 'lat and lon required'))
+  
+  const results: Record<string, any> = {}
+  const tasks: Promise<void>[] = []
+  
+  // Weather
+  if (domains.has('weather') && c.env.OWM_KEY) {
+    tasks.push(
+      safeJson(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${c.env.OWM_KEY}&units=metric`, {}, 8000)
+        .then(d => { results.weather = d })
+        .catch(() => { results.weather = null })
+    )
+  }
+  
+  // Aviation SIGMETs
+  if (domains.has('aviation') && c.env.AVWX_KEY) {
+    tasks.push(
+      safeJson('https://avwx.rest/api/sigmet', { headers: { 'Authorization': `Bearer ${c.env.AVWX_KEY}` } }, 10000)
+        .then(d => { results.sigmets = Array.isArray(d) ? d.slice(0, 20) : [] })
+        .catch(() => { results.sigmets = [] })
+    )
+    // Nearest METARs
+    tasks.push(
+      safeJson(`https://avwx.rest/api/station/near/${lat.toFixed(4)},${lon.toFixed(4)}?n=3&maxdist=200`, {
+        headers: { 'Authorization': `Bearer ${c.env.AVWX_KEY}` }
+      }, 8000)
+        .then(async stations => {
+          const icaos = (stations || []).filter((s: any) => s?.station?.icao).map((s: any) => s.station.icao).slice(0, 3)
+          const metarResults = await Promise.allSettled(
+            icaos.map((icao: string) => safeJson(`https://avwx.rest/api/metar/${icao}?format=json`, {
+              headers: { 'Authorization': `Bearer ${c.env.AVWX_KEY}` }
+            }, 6000))
+          )
+          results.metars = metarResults.filter(r => r.status === 'fulfilled').map(r => (r as any).value)
+        })
+        .catch(() => { results.metars = [] })
+    )
+  }
+  
+  // Natural events (EONET)
+  if (domains.has('natural')) {
+    const KM_PER_DEG = 111.0
+    const deltaLat = radiusKm / KM_PER_DEG
+    const deltaLon = radiusKm / (KM_PER_DEG * Math.cos(lat * Math.PI / 180))
+    const bbox = `${(lon - deltaLon).toFixed(4)},${(lat - deltaLat).toFixed(4)},${(lon + deltaLon).toFixed(4)},${(lat + deltaLat).toFixed(4)}`
+    tasks.push(
+      safeJson(`https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=25&days=30&bbox=${bbox}`, {}, 12000)
+        .then(d => { results.natural_events = (d.events || []).slice(0, 25) })
+        .catch(() => { results.natural_events = [] })
+    )
+  }
+  
+  // Cyber (Shodan geo)
+  if (domains.has('cyber') && c.env.SHODAN_KEY) {
+    const geoQ = `geo:${lat.toFixed(4)},${lon.toFixed(4)},${Math.min(radiusKm, 200)}`
+    tasks.push(
+      safeJson(`https://api.shodan.io/shodan/host/search?key=${c.env.SHODAN_KEY}&query=${encodeURIComponent(geoQ)}&minify=true&page=1`, {}, 12000)
+        .then(d => { results.cyber_hosts = (d.matches || []).slice(0, 30) })
+        .catch(() => { results.cyber_hosts = [] })
+    )
+  }
+  
+  // Execute all concurrently (V4 asyncio.gather pattern)
+  await Promise.allSettled(tasks)
+  
+  return c.json({
+    query: { lat, lon, radius_km: radiusKm, domains: Array.from(domains).sort() },
+    weather: results.weather || null,
+    aviation: { sigmets: results.sigmets || [], metars: results.metars || [] },
+    natural_events: results.natural_events || [],
+    cyber: { exposed_hosts: results.cyber_hosts || [], host_count: (results.cyber_hosts || []).length },
+    timestamp: new Date().toISOString(),
+    source: 'intel-overview',
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CIRCUIT BREAKER STATUS — Diagnostic endpoint
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/circuits', (c) => {
+  const status: Record<string, any> = {}
+  for (const [src, s] of Object.entries(circuits)) {
+    status[src] = {
+      open: s.open,
+      failures: s.failures,
+      last_failure: s.lastFailure > 0 ? new Date(s.lastFailure).toISOString() : null,
+      cooldown_remaining_s: s.open ? Math.max(0, Math.round((CB_COOLDOWN - (Date.now() - s.lastFailure)) / 1000)) : 0,
+    }
+  }
+  return c.json({ circuits: status, threshold: CB_THRESHOLD, cooldown_s: CB_COOLDOWN / 1000 })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CACHE STATUS — Diagnostic endpoint
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/cache/status', (c) => {
+  const entries: Record<string, any> = {}
+  const now = Date.now()
+  for (const [key, entry] of Object.entries(responseCache)) {
+    entries[key] = {
+      age_s: Math.round((now - entry.ts) / 1000),
+      ttl_s: Math.round(entry.ttl / 1000),
+      remaining_s: Math.max(0, Math.round((entry.ttl - (now - entry.ts)) / 1000)),
+      expired: now - entry.ts > entry.ttl,
+    }
+  }
+  return c.json({ entries, count: Object.keys(entries).length })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // HEALTH + STATUS
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/health', (c) => c.json({
@@ -1314,6 +1850,8 @@ app.get('/api/health', (c) => c.json({
   codename: 'SENTINEL OS',
   timestamp: new Date().toISOString(),
   domains: ['aviation', 'maritime', 'orbital', 'seismic', 'wildfire', 'weather', 'conflict', 'disaster', 'cyber', 'nuclear', 'gnss', 'social', 'imagery'],
+  v84_features: ['response-cache', 'circuit-breaker', 'sigmet-layer', 'eonet-natural-events', 'shodan-geo-search', 'shodan-host-intel', 'shodan-exploit-lookup', 'coordinate-metar', 'intel-overview'],
+  v85_features: ['request-id-tracing', 'sigmet-map-polygons', 'eonet-map-markers', 'shodan-geo-pins', 'intel-overview-panel', 'circuit-status-ui', 'coordinate-metar-click', 'cache-hit-indicators', 'entity-parser-hardening', 'dedup-enforcement', 'correlation-engine', 'threat-scoring-v2', 'domain-tab-ui', 'mobile-drawers', 'confidence-freshness-chips', 'timeline-replay-v2', 'viewport-culling', 'mobile-perf-throttles', 'copernicus-tiles', 'gnss-circle-overlays', 'social-feed-panel', 'cdm-visualization'],
 }))
 
 app.get('/api/status', (c) => {
