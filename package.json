@@ -1,8 +1,8 @@
 {
   "name": "sentinel-os",
   "type": "module",
-  "version": "8.5.0",
-  "description": "SENTINEL OS \u2014 Production-grade global situational awareness platform",
+  "version": "9.0.0",
+  "description": "SENTINEL-X \u2014 Multi-domain situational awareness & decision-support platform",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
