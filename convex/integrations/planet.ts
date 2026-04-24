@@ -3,14 +3,16 @@
  * https://developers.planet.com/docs/apis/
  */
 import { internalAction } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 export const fetchPlanetScenes = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const apiKey = process.env.PLANET_API_KEY;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const apiKey = resolveEnv(_cfg, "PLANET_API_KEY");
 		if (!apiKey) {
 			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
 				sourceId: "planet", name: "Planet Labs", status: "error", recordCount: 0,

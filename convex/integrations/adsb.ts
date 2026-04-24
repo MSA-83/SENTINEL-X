@@ -3,8 +3,9 @@
  * https://rapidapi.com/adsbx/api/adsbexchange-com1
  */
 import { internalAction, internalMutation } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 interface AircraftData {
 	icao24: string;
@@ -25,7 +26,8 @@ export const fetchAircraft = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const rapidApiKey = process.env.RAPIDAPI_KEY;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const rapidApiKey = resolveEnv(_cfg, "RAPIDAPI_KEY");
 		if (!rapidApiKey) {
 			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
 				sourceId: "adsb", name: "ADS-B Exchange", status: "error", recordCount: 0,
@@ -53,9 +55,14 @@ export const fetchAircraft = internalAction({
 							"X-RapidAPI-Key": rapidApiKey,
 							"X-RapidAPI-Host": "adsbexchange-com1.p.rapidapi.com",
 						},
+						signal: AbortSignal.timeout(15000),
 					});
 
-					if (!resp.ok) continue;
+					if (!resp.ok) {
+						const errText = await resp.text().catch(() => "");
+						console.log(`ADS-B ${box.name}: HTTP ${resp.status} - ${errText.slice(0, 200)}`);
+						continue;
+					}
 					const data = await resp.json();
 
 					for (const ac of (data.ac ?? []).slice(0, 25)) {
@@ -78,6 +85,43 @@ export const fetchAircraft = internalAction({
 				} catch {
 					// Individual box failed
 				}
+			}
+
+			// Fallback to OpenSky Network (FREE, no key needed) if RapidAPI returned nothing
+			if (aircraft.length === 0) {
+				try {
+					const osBounds = [
+						{ name: "Eastern Med", lamin: 30, lomin: 28, lamax: 40, lomax: 38 },
+						{ name: "Black Sea", lamin: 40, lomin: 28, lamax: 48, lomax: 42 },
+						{ name: "Persian Gulf", lamin: 22, lomin: 48, lamax: 30, lomax: 58 },
+						{ name: "Baltic", lamin: 54, lomin: 16, lamax: 62, lomax: 28 },
+					];
+					for (const b of osBounds) {
+						try {
+							const osUrl = `https://opensky-network.org/api/states/all?lamin=${b.lamin}&lomin=${b.lomin}&lamax=${b.lamax}&lomax=${b.lomax}`;
+							const osResp = await fetch(osUrl, { signal: AbortSignal.timeout(10000) });
+							if (!osResp.ok) continue;
+							const osData = await osResp.json();
+							for (const s of (osData.states || []).slice(0, 25)) {
+								if (!s[6] || !s[5]) continue;
+								aircraft.push({
+									icao24: s[0] || `os-${Math.random().toString(36).slice(2,8)}`,
+									callsign: (s[1] || "").trim() || "UNKNOWN",
+									originCountry: s[2] || "Unknown",
+									latitude: Number(s[6]),
+									longitude: Number(s[5]),
+									baroAltitude: Number(s[7]) || 0,
+									geoAltitude: Number(s[13]) || 0,
+									velocity: Number(s[9]) || 0,
+									heading: Number(s[10]) || 0,
+									verticalRate: Number(s[11]) || 0,
+									onGround: Boolean(s[8]),
+									squawk: s[14] || "",
+								});
+							}
+						} catch { /* individual OpenSky box failed */ }
+					}
+				} catch { /* OpenSky fallback failed entirely */ }
 			}
 
 			if (aircraft.length > 0) {

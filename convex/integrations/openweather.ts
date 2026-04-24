@@ -3,8 +3,9 @@
  * https://openweathermap.org/current
  */
 import { internalAction, internalMutation } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 // Strategic monitoring points
 const AOI_POINTS = [
@@ -39,7 +40,8 @@ export const fetchWeather = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const apiKey = process.env.OPENWEATHER_KEY;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const apiKey = resolveEnv(_cfg, "OPENWEATHER_KEY");
 		if (!apiKey) {
 			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
 				sourceId: "openweather", name: "OpenWeatherMap", status: "error", recordCount: 0,

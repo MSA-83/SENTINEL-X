@@ -32,7 +32,7 @@ export const fetchDisasters = internalAction({
 					country: p.country || "Unknown",
 					description: p.description || p.htmldescription || "",
 					source: "gdacs",
-					url: p.url || p.link || "",
+					url: typeof p.url === "string" ? p.url : (typeof p.link === "string" ? p.link : (p.url?.details || p.url?.detail || p.url?.href || (typeof p.url === "object" ? JSON.stringify(p.url) : String(p.url || "")))),
 					fromDate: p.fromdate || new Date().toISOString(),
 					timestamp: Date.now(),
 				};

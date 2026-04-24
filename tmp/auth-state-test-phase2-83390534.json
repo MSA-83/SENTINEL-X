@@ -1,0 +1,18 @@
+{
+  "cookies": [],
+  "origins": [
+    {
+      "origin": "http://localhost:4173",
+      "localStorage": [
+        {
+          "name": "__convexAuthJWT_httpsopulentmouse94convexcloud",
+          "value": "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJqeDdkcnR4bnB4YmFiZG12dmRzamtzMHQ0MTg0dDVwY3xqaDc2ZHdyNGNhN3ludjNmd3F2Y25hOW1leDg0dDJ0ayIsImlhdCI6MTc3NjE5NDc5NiwiaXNzIjoiaHR0cHM6Ly9vcHVsZW50LW1vdXNlLTk0LmNvbnZleC5zaXRlIiwiYXVkIjoiY29udmV4IiwiZXhwIjoxNzc2MTk4Mzk2fQ.CEHkm5hDYozGByaUbMYOhwTVQog2glsTKV0614uj680FAwCo02NU5xlo7TSRpf_hlCRDAFZ82ze9hEArVlXo7P0V_F4YjGf3tkkeQgqIcxcTEkrmFchV50d_oK0Z-9wltvE_giHEqkVDZWRwQ980pyJlBQVRRqDWgXs99HfHGXw5SHAYct9bK_8bg3nF9roHsyYjlv5E0_ikAZxDiOVtCIEYJJZWMLgFDmIl5-R0FJS7Z4zI8NZWhQyz0rxpcb3S2u_P9dNqIBKerVnnuurkG5mUv5P873il1y_26A-BNVrnVRmmMwcVOLpICXMl3Xp-VYeq5LNRuBQxehPnDnK-_A"
+        },
+        {
+          "name": "__convexAuthRefreshToken_httpsopulentmouse94convexcloud",
+          "value": "jd7fp4mp0zc5nbcy1p49dtmhk984vsam|jh76dwr4ca7ynv3fwqvcna9mex84t2tk"
+        }
+      ]
+    }
+  ]
+}

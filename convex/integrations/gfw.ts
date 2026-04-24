@@ -3,8 +3,9 @@
  * https://globalfishingwatch.org/our-apis/
  */
 import { internalAction, internalMutation } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 interface VesselEntry {
 	mmsi: string;
@@ -23,7 +24,8 @@ export const fetchVessels = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const token = process.env.GFW_TOKEN;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const token = resolveEnv(_cfg, "GFW_TOKEN");
 		if (!token) {
 			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
 				sourceId: "gfw", name: "Global Fishing Watch", status: "error", recordCount: 0,

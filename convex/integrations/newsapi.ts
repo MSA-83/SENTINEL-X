@@ -3,8 +3,9 @@
  * https://newsapi.org/docs/endpoints/everything
  */
 import { internalAction, internalMutation } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 // Geo-tagged keywords mapped to approximate coordinates
 const KEYWORD_GEO: Record<string, { lat: number; lon: number }> = {
@@ -43,7 +44,8 @@ export const fetchNews = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const apiKey = process.env.NEWSAPI_KEY;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const apiKey = resolveEnv(_cfg, "NEWSAPI_KEY");
 		if (!apiKey) {
 			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
 				sourceId: "newsapi", name: "NewsAPI", status: "error", recordCount: 0,

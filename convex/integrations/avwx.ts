@@ -3,8 +3,9 @@
  * https://avwx.rest/documentation
  */
 import { internalAction } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 // Key military/commercial airports in AOIs
 const STATIONS = [
@@ -23,7 +24,8 @@ export const fetchAviationWeather = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const token = process.env.AVWX_TOKEN;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const token = resolveEnv(_cfg, "AVWX_TOKEN");
 		if (!token) {
 			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
 				sourceId: "avwx", name: "AVWX Aviation Wx", status: "error", recordCount: 0,

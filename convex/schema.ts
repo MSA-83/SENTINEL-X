@@ -494,6 +494,13 @@ const schema = defineSchema({
 	})
 		.index("by_sessionId", ["sessionId"])
 		.index("by_userId", ["userId"]),
+
+	// Runtime config (API keys stored via HTTP endpoint when env vars unavailable)
+	runtimeConfig: defineTable({
+		key: v.string(),
+		value: v.string(),
+		updatedAt: v.number(),
+	}).index("by_key", ["key"]),
 });
 
 export default schema;

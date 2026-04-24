@@ -48,7 +48,9 @@ export const fetchGDELTEvents = internalAction({
 
 					const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
 					if (!res.ok) continue;
-					const data = await res.json();
+					const text = await res.text();
+					let data;
+					try { data = JSON.parse(text); } catch { continue; } // GDELT sometimes returns HTML/error pages
 
 					const articles = data.articles || [];
 					for (let i = 0; i < Math.min(articles.length, 15); i++) {
@@ -99,9 +101,9 @@ export const fetchGDELTEvents = internalAction({
 				status: "error",
 				lastFetch: Date.now(),
 				recordCount: 0,
-				errorMessage: e.message,
+				errorMessage: (e.message || String(e)).slice(0, 300),
 			});
-			return { success: false, error: e.message };
+			return { success: false, error: (e.message || String(e)).slice(0, 300) };
 		}
 	},
 });

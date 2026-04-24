@@ -38,16 +38,11 @@ import HeatmapTimelapse from "../components/dashboard/HeatmapTimelapse";
 import SuperclusterLayer from "../components/dashboard/SuperclusterLayer";
 import TerrainControl from "../components/dashboard/TerrainControl";
 import AlertRulesEngine from "../components/dashboard/AlertRulesEngine";
-import BasemapSwitcher from "../components/dashboard/BasemapSwitcher";
-import TacticalAnnotations from "../components/dashboard/TacticalAnnotations";
-import ProximityRadar from "../components/dashboard/ProximityRadar";
-import BookmarkManager, { useBookmarks } from "../components/dashboard/BookmarkManager";
-import { EntityLinkerPanel, EntityLinkerMapOverlay, useEntityLinks } from "../components/dashboard/EntityLinker";
 import { useAircraft, useSeismicEvents, useDisasters, useISSPositions } from "../hooks/useEntityData";
 import { LAYERS, INITIAL_VIEW_STATE } from "../lib/constants";
 import type maplibregl from "maplibre-gl";
 
-type RightTab = "alerts" | "threats" | "osint" | "sources" | "imagery" | "export" | "sitrep" | "geofence" | "analytics" | "watchlist" | "darkfleet" | "briefing" | "rules" | "bookmarks" | "links";
+type RightTab = "alerts" | "threats" | "osint" | "sources" | "imagery" | "export" | "sitrep" | "geofence" | "analytics" | "watchlist" | "darkfleet" | "briefing" | "rules";
 
 /** Bottom nav items for mobile */
 const MOBILE_TABS: { id: RightTab | "map" | "layers"; label: string; icon: string }[] = [
@@ -65,8 +60,6 @@ const MOBILE_TABS: { id: RightTab | "map" | "layers"; label: string; icon: strin
 	{ id: "darkfleet", label: "DARK",    icon: "🚢" },
 	{ id: "briefing",  label: "BRIEF",   icon: "📄" },
 	{ id: "rules",     label: "RULES",   icon: "⚡" },
-	{ id: "bookmarks", label: "MARKS",   icon: "📍" },
-	{ id: "links",     label: "LINKS",   icon: "🔗" },
 	{ id: "export",    label: "EXPORT",  icon: "⬇" },
 ];
 
@@ -136,13 +129,6 @@ export function CommandCenter() {
 
 	// 3D Terrain toggle
 	const [show3DTerrain, setShow3DTerrain] = useState(false);
-
-	// Phase 14: Tactical Operations Suite
-	const [showAnnotations, setShowAnnotations] = useState(false);
-	const [proximityCenter, setProximityCenter] = useState<{ lat: number; lon: number } | null>(null);
-	const [linkSource, setLinkSource] = useState<{ id: string; label: string; lat: number; lon: number; type: string } | null>(null);
-	const bookmarks = useBookmarks();
-	const entityLinks = useEntityLinks();
 
 	// Geofence alert state
 	const [geofenceZones, setGeofenceZones] = useState<GFZone[]>([]);
@@ -244,21 +230,6 @@ export function CommandCenter() {
 	// Geofence alert handler
 	const handleGeofenceAlert = useCallback((alert: GeofenceAlert) => {
 		setGeofenceAlerts((prev) => [alert, ...prev].slice(0, 50));
-	}, []);
-
-	// Toggle proximity radar centered on selected entity
-	const handleProximityRadar = useCallback(() => {
-		if (selectedEntity && typeof selectedEntity.latitude === "number" && typeof selectedEntity.longitude === "number") {
-			setProximityCenter({ lat: selectedEntity.latitude as number, lon: selectedEntity.longitude as number });
-		}
-	}, [selectedEntity]);
-
-	// Bookmark navigation handler
-	const handleBookmarkNavigate = useCallback((bm: { lat: number; lon: number; zoom: number; bearing: number; pitch: number; layers: Record<string, boolean> }) => {
-		const m = mapRef.current;
-		if (!m) return;
-		m.flyTo({ center: [bm.lon, bm.lat], zoom: bm.zoom, bearing: bm.bearing, pitch: bm.pitch, duration: 1200 });
-		if (bm.layers) setLayers(bm.layers);
 	}, []);
 
 	// Add to watchlist from entity inspector
@@ -400,14 +371,9 @@ export function CommandCenter() {
 									<ThreatBriefingPDF />
 								) : mobileTab === "rules" ? (
 									<AlertRulesEngine />
-								) : mobileTab === "bookmarks" ? (
-									<BookmarkManager bookmarks={bookmarks.bookmarks} onAdd={bookmarks.addBookmark} onRemove={bookmarks.removeBookmark} onRename={bookmarks.renameBookmark} onNavigate={handleBookmarkNavigate} currentView={{ lat: mapCenter.lat, lon: mapCenter.lng, zoom: mapZoom, bearing: 0, pitch: 0 }} currentLayers={layers} />
-								) : mobileTab === "links" ? (
-									<EntityLinkerPanel links={entityLinks.links} onAdd={entityLinks.addLink} onRemove={entityLinks.removeLink} onClear={entityLinks.clearLinks} selectedEntity={selectedEntity} linkSource={linkSource} onSetLinkSource={setLinkSource} />
 								) : mobileTab === "export" ? (
 									<ExportPanel />
 								) : null}
-						</div>
 						</div>
 					</>
 				)}
@@ -450,7 +416,7 @@ export function CommandCenter() {
 	// ═══════════════════════════════════════════════════
 	//  DESKTOP LAYOUT (≥ 768px)
 	// ═══════════════════════════════════════════════════
-	const DESKTOP_TABS: RightTab[] = ["alerts", "threats", "analytics", "osint", "sources", "imagery", "watchlist", "geofence", "sitrep", "darkfleet", "briefing", "rules", "bookmarks", "links", "export"];
+	const DESKTOP_TABS: RightTab[] = ["alerts", "threats", "analytics", "osint", "sources", "imagery", "watchlist", "geofence", "sitrep", "darkfleet", "briefing", "rules", "export"];
 
 	return (
 		<div className="h-screen w-screen flex flex-col overflow-hidden bg-slate-950">
@@ -521,20 +487,6 @@ export function CommandCenter() {
 							>
 								{show3DTerrain ? "◉" : "○"} 3D TERRAIN
 							</button>
-							<button
-								type="button"
-								onClick={() => setShowAnnotations(v => !v)}
-								className={`w-full text-left px-2 py-1 rounded text-[9px] font-mono tracking-wider transition-colors ${showAnnotations ? "bg-pink-900/30 text-pink-400 border border-pink-700/30" : "text-slate-500 hover:text-slate-300"}`}
-							>
-								{showAnnotations ? "◉" : "○"} ANNOTATIONS
-							</button>
-							<button
-								type="button"
-								onClick={handleProximityRadar}
-								className={`w-full text-left px-2 py-1 rounded text-[9px] font-mono tracking-wider transition-colors ${proximityCenter ? "bg-orange-900/30 text-orange-400 border border-orange-700/30" : "text-slate-500 hover:text-slate-300"}`}
-							>
-								{proximityCenter ? "◎" : "○"} PROX RADAR
-							</button>
 						</div>
 					</div>
 
@@ -584,18 +536,6 @@ export function CommandCenter() {
 
 					{/* 3D Terrain + Buildings */}
 					<TerrainControl mapRef={mapRef} enabled={show3DTerrain} />
-
-					{/* Phase 14: Basemap Switcher */}
-					<BasemapSwitcher map={mapRef.current} />
-
-					{/* Phase 14: Tactical Annotations */}
-					<TacticalAnnotations map={mapRef.current} active={showAnnotations} onClose={() => setShowAnnotations(false)} />
-
-					{/* Phase 14: Proximity Radar */}
-					<ProximityRadar map={mapRef.current} center={proximityCenter} onClose={() => setProximityCenter(null)} />
-
-					{/* Phase 14: Entity Linker Map Overlay */}
-					<EntityLinkerMapOverlay map={mapRef.current} links={entityLinks.links} />
 
 					{/* Entity inspector */}
 					<EntityDetail
@@ -682,21 +622,6 @@ export function CommandCenter() {
 								▲ 3D
 							</div>
 						)}
-						{showAnnotations && (
-							<div className="px-2 py-0.5 bg-pink-900/40 border border-pink-700/40 rounded text-[8px] font-mono font-bold text-pink-400 tracking-widest">
-								✏ ANNOTATE
-							</div>
-						)}
-						{proximityCenter && (
-							<div className="px-2 py-0.5 bg-orange-900/40 border border-orange-700/40 rounded text-[8px] font-mono font-bold text-orange-400 tracking-widest">
-								◎ RADAR
-							</div>
-						)}
-						{entityLinks.links.length > 0 && (
-							<div className="px-2 py-0.5 bg-violet-900/40 border border-violet-700/40 rounded text-[8px] font-mono font-bold text-violet-400 tracking-widest">
-								🔗 {entityLinks.links.length} LINK{entityLinks.links.length > 1 ? "S" : ""}
-							</div>
-						)}
 						<div className="px-2 py-0.5 bg-emerald-900/40 border border-emerald-700/40 rounded text-[9px] font-mono font-bold text-emerald-400 tracking-widest">
 							UNCLASSIFIED // FOUO
 						</div>
@@ -743,7 +668,7 @@ export function CommandCenter() {
 											: "text-slate-600 hover:text-slate-400"
 									}`}
 								>
-									{tab === "analytics" ? "📊" : tab === "watchlist" ? "📌" : tab === "darkfleet" ? "🚢" : tab === "briefing" ? "📄" : tab === "rules" ? "⚡" : tab === "bookmarks" ? "📍" : tab === "links" ? "🔗" : ""}{tab.toUpperCase()}
+									{tab === "analytics" ? "📊" : tab === "watchlist" ? "📌" : tab === "darkfleet" ? "🚢" : tab === "briefing" ? "📄" : tab === "rules" ? "⚡" : ""}{tab.toUpperCase()}
 								</button>
 							))}
 						</div>
@@ -761,8 +686,6 @@ export function CommandCenter() {
 							{rightTab === "briefing" && <div className="overflow-y-auto flex-1 h-full p-2"><ThreatBriefingPDF /></div>}
 							{rightTab === "export" && <ExportPanel />}
 							{rightTab === "rules" && <div className="overflow-y-auto flex-1 h-full"><AlertRulesEngine /></div>}
-							{rightTab === "bookmarks" && <BookmarkManager bookmarks={bookmarks.bookmarks} onAdd={bookmarks.addBookmark} onRemove={bookmarks.removeBookmark} onRename={bookmarks.renameBookmark} onNavigate={handleBookmarkNavigate} currentView={{ lat: mapCenter.lat, lon: mapCenter.lng, zoom: mapZoom, bearing: 0, pitch: 0 }} currentLayers={layers} />}
-							{rightTab === "links" && <EntityLinkerPanel links={entityLinks.links} onAdd={entityLinks.addLink} onRemove={entityLinks.removeLink} onClear={entityLinks.clearLinks} selectedEntity={selectedEntity} linkSource={linkSource} onSetLinkSource={setLinkSource} />}
 						</div>
 					</div>
 				)}

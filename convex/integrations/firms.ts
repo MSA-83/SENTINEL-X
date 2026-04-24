@@ -4,8 +4,9 @@
  * https://firms.modaps.eosdis.nasa.gov/api/
  */
 import { internalAction, internalMutation } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 interface FIRMSRecord {
 	latitude: number;
@@ -22,7 +23,8 @@ export const fetchFires = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const apiKey = process.env.NASA_FIRMS_KEY;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const apiKey = resolveEnv(_cfg, "NASA_FIRMS_KEY");
 		if (!apiKey) {
 			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
 				sourceId: "firms", name: "NASA FIRMS", status: "error", recordCount: 0,

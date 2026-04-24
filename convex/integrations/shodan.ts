@@ -3,8 +3,9 @@
  * https://developer.shodan.io/api
  */
 import { internalAction, internalMutation } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 interface CyberEntry {
 	threatId: string;
@@ -23,8 +24,9 @@ export const fetchCyberThreats = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const shodanKey = process.env.SHODAN_KEY;
-		const abusechKey = process.env.ABUSECH_KEY;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const shodanKey = resolveEnv(_cfg, "SHODAN_KEY");
+		const abusechKey = resolveEnv(_cfg, "ABUSECH_KEY");
 
 		const threats: CyberEntry[] = [];
 

@@ -3,15 +3,17 @@
  * https://www.space-track.org/documentation
  */
 import { internalAction } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 export const fetchTLEs = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const user = process.env.SPACETRACK_USER;
-		const pass = process.env.SPACETRACK_PASS;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const user = resolveEnv(_cfg, "SPACETRACK_USER");
+		const pass = resolveEnv(_cfg, "SPACETRACK_PASS");
 		if (!user || !pass) {
 			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
 				sourceId: "spacetrack", name: "Space-Track TLE", status: "error", recordCount: 0,

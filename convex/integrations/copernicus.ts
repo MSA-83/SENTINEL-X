@@ -3,15 +3,17 @@
  * https://dataspace.copernicus.eu/
  */
 import { internalAction, internalMutation } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 export const fetchSentinelScenes = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const clientId = process.env.COPERNICUS_CLIENT_ID;
-		const clientSecret = process.env.COPERNICUS_CLIENT_SECRET;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const clientId = resolveEnv(_cfg, "COPERNICUS_CLIENT_ID");
+		const clientSecret = resolveEnv(_cfg, "COPERNICUS_CLIENT_SECRET");
 		if (!clientId || !clientSecret) {
 			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
 				sourceId: "copernicus", name: "Copernicus Sentinel", status: "error", recordCount: 0,

@@ -3,8 +3,9 @@
  * https://www.n2yo.com/api/
  */
 import { internalAction, internalMutation } from "../_generated/server";
-import { internal } from "../_generated/api";
+import { internal, api } from "../_generated/api";
 import { v } from "convex/values";
+import { resolveEnv } from "../lib/envHelper";
 
 // Notable satellites to track
 const TRACKED_SATS = [
@@ -33,7 +34,8 @@ export const fetchSatellites = internalAction({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const apiKey = process.env.N2YO_KEY;
+		const _cfg = await ctx.runQuery(api.lib.envHelper.getAllConfig);
+		const apiKey = resolveEnv(_cfg, "N2YO_KEY");
 		if (!apiKey) {
 			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
 				sourceId: "n2yo", name: "N2YO Satellites", status: "error", recordCount: 0,
