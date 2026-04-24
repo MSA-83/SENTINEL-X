@@ -4,28 +4,30 @@ node_modules/
 # Build output
 dist/
 
-# Wrangler local state
-.wrangler/
+# Environment variables
+.env
+.env.local
+.env.*.local
 
-# Secrets — NEVER commit
-.dev.vars
+# Convex generated files
+convex/_generated/
 
-# Logs
-*.log
-npm-debug.log*
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # OS files
 .DS_Store
 Thumbs.db
 
-# IDE
-.vscode/
-.idea/
+# Logs
+*.log
+npm-debug.log*
+bun.lockb
 
-# Backups
-*.backup
-*.bak
-*.tar.gz
-
-# Uploaded files (dev artifacts)
-upload_files/
+# Temp/test output
+tmp/
+test-results/
+playwright-report/

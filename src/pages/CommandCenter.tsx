@@ -1,0 +1,743 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MapView } from "../components/map/MapView";
+import StatsBar from "../components/dashboard/StatsBar";
+import AlertPanel from "../components/dashboard/AlertPanel";
+import LayerControls from "../components/dashboard/LayerControls";
+import EntityDetail from "../components/dashboard/EntityDetail";
+import { DataSourcePanel } from "../components/dashboard/DataSourcePanel";
+import { NewsFeed } from "../components/dashboard/NewsFeed";
+import ThreatBoard from "../components/dashboard/ThreatBoard";
+import SearchBar from "../components/dashboard/SearchBar";
+import StatsRing from "../components/dashboard/StatsRing";
+import ThreatGauge from "../components/dashboard/ThreatGauge";
+import MapToolbar from "../components/dashboard/MapToolbar";
+import NotificationToast, { useCriticalEventToasts } from "../components/dashboard/NotificationToast";
+import Minimap from "../components/dashboard/Minimap";
+import SatelliteImagery from "../components/dashboard/SatelliteImagery";
+import ExportPanel from "../components/dashboard/ExportPanel";
+import DataHealthBar from "../components/dashboard/DataHealthBar";
+import KeyboardShortcuts from "../components/dashboard/KeyboardShortcuts";
+import FilterControls from "../components/dashboard/FilterControls";
+import type { FilterState } from "../components/dashboard/FilterControls";
+import GeofenceManager from "../components/dashboard/GeofenceManager";
+import SitRepGenerator from "../components/dashboard/SitRepGenerator";
+import CriticalMarkers from "../components/dashboard/CriticalMarkers";
+import AnalyticsPanel from "../components/dashboard/AnalyticsPanel";
+import WatchlistPanel, { useWatchlist } from "../components/dashboard/Watchlist";
+import CorrelationLines from "../components/dashboard/CorrelationLines";
+import SolarTerminator from "../components/dashboard/SolarTerminator";
+import WeatherOverlay from "../components/dashboard/WeatherOverlay";
+import ISSOrbitTrack from "../components/dashboard/ISSOrbitTrack";
+import GeofenceAlerts from "../components/dashboard/GeofenceAlerts";
+import type { GeofenceAlert, GeofenceZone as GFZone } from "../components/dashboard/GeofenceAlerts";
+import EnhancedTimeline from "../components/dashboard/EnhancedTimeline";
+import MeasurementTools from "../components/dashboard/MeasurementTools";
+import ThreatBriefingPDF from "../components/dashboard/ThreatBriefingPDF";
+import DarkFleetDetector from "../components/dashboard/DarkFleetDetector";
+import HeatmapTimelapse from "../components/dashboard/HeatmapTimelapse";
+import SuperclusterLayer from "../components/dashboard/SuperclusterLayer";
+import TerrainControl from "../components/dashboard/TerrainControl";
+import AlertRulesEngine from "../components/dashboard/AlertRulesEngine";
+import { useAircraft, useSeismicEvents, useDisasters, useISSPositions } from "../hooks/useEntityData";
+import { LAYERS, INITIAL_VIEW_STATE } from "../lib/constants";
+import type maplibregl from "maplibre-gl";
+
+type RightTab = "alerts" | "threats" | "osint" | "sources" | "imagery" | "export" | "sitrep" | "geofence" | "analytics" | "watchlist" | "darkfleet" | "briefing" | "rules";
+
+/** Bottom nav items for mobile */
+const MOBILE_TABS: { id: RightTab | "map" | "layers"; label: string; icon: string }[] = [
+	{ id: "map",       label: "MAP",     icon: "🗺" },
+	{ id: "layers",    label: "LAYERS",  icon: "◉" },
+	{ id: "alerts",    label: "ALERTS",  icon: "⚠" },
+	{ id: "threats",   label: "THREATS", icon: "🔴" },
+	{ id: "analytics", label: "STATS",   icon: "📊" },
+	{ id: "osint",     label: "OSINT",   icon: "📡" },
+	{ id: "sources",   label: "FEEDS",   icon: "◈" },
+	{ id: "imagery",   label: "SAT",     icon: "🛰" },
+	{ id: "watchlist", label: "WATCH",   icon: "📌" },
+	{ id: "geofence",  label: "ZONES",   icon: "⬡" },
+	{ id: "sitrep",    label: "SITREP",  icon: "📋" },
+	{ id: "darkfleet", label: "DARK",    icon: "🚢" },
+	{ id: "briefing",  label: "BRIEF",   icon: "📄" },
+	{ id: "rules",     label: "RULES",   icon: "⚡" },
+	{ id: "export",    label: "EXPORT",  icon: "⬇" },
+];
+
+function useIsMobile(): boolean {
+	const [isMobile, setIsMobile] = useState(false);
+	useEffect(() => {
+		const mq = window.matchMedia("(max-width: 767px)");
+		const handler = (e: MediaQueryListEvent | MediaQueryList) => setIsMobile(e.matches);
+		handler(mq);
+		mq.addEventListener("change", handler as (e: MediaQueryListEvent) => void);
+		return () => mq.removeEventListener("change", handler as (e: MediaQueryListEvent) => void);
+	}, []);
+	return isMobile;
+}
+
+export function CommandCenter() {
+	const isMobile = useIsMobile();
+
+	// Layer visibility state — all ON by default
+	const [layers, setLayers] = useState<Record<string, boolean>>(() => {
+		const init: Record<string, boolean> = {};
+		for (const key of Object.keys(LAYERS)) init[key] = true;
+		return init;
+	});
+	const [activeDomain, setActiveDomain] = useState("ALL");
+	const [selectedEntity, setSelectedEntity] = useState<Record<string, unknown> | null>(null);
+	const [showRightPanel, setShowRightPanel] = useState(true);
+	const [rightTab, setRightTab] = useState<RightTab>("alerts");
+	const [flyTo, setFlyTo] = useState<{ lat: number; lon: number } | null>(null);
+	const [time, setTime] = useState(new Date());
+	const [, setReplayTs] = useState<number | null>(null);
+
+	// Mobile drawer state
+	const [mobileTab, setMobileTab] = useState<"map" | "layers" | RightTab>("map");
+	const [drawerOpen, setDrawerOpen] = useState(false);
+
+	// Map toolbar state
+	const mapRef = useRef<maplibregl.Map | null>(null);
+	const [cursorCoords, setCursorCoords] = useState<{ lat: number; lng: number } | null>(null);
+	const [mapCenter, setMapCenter] = useState<{ lat: number; lng: number }>({ lat: INITIAL_VIEW_STATE.latitude, lng: INITIAL_VIEW_STATE.longitude });
+	const [mapZoom, setMapZoom] = useState(INITIAL_VIEW_STATE.zoom);
+	const [mapBounds, setMapBounds] = useState<[[number, number], [number, number]] | null>(null);
+	const [isFullscreen, setIsFullscreen] = useState(false);
+	const [isMeasuring, setIsMeasuring] = useState(false);
+	const [measureDistance, setMeasureDistance] = useState<number | null>(null);
+
+	// Entity filters
+	const [filters, setFilters] = useState<FilterState>({ severityMin: 0, timeRange: 0, searchQuery: "" });
+
+	// Show trails
+	const [showTrails, setShowTrails] = useState(false);
+
+	// Globe projection toggle
+	const [isGlobe, setIsGlobe] = useState(false);
+
+	// Correlation lines toggle
+	const [showCorrelations, setShowCorrelations] = useState(false);
+
+	// Solar terminator (night/day)
+	const [showTerminator, setShowTerminator] = useState(false);
+
+	// ISS orbit track
+	const [showISSOrbit, setShowISSOrbit] = useState(false);
+
+	// Supercluster toggle
+	const [showSupercluster, setShowSupercluster] = useState(false);
+
+	// 3D Terrain toggle
+	const [show3DTerrain, setShow3DTerrain] = useState(false);
+
+	// Geofence alert state
+	const [geofenceZones, setGeofenceZones] = useState<GFZone[]>([]);
+	const [geofenceAlerts, setGeofenceAlerts] = useState<GeofenceAlert[]>([]);
+
+	// Watchlist
+	const watchlist = useWatchlist();
+
+	// Critical event toasts
+	const aircraft = useAircraft();
+	const seismicEvents = useSeismicEvents();
+	const disastersList = useDisasters();
+	const issPositions = useISSPositions();
+	const latestISS = useMemo(() => {
+		if (!issPositions || issPositions.length === 0) return null;
+		return issPositions[0] as { latitude: number; longitude: number; altitude?: number; velocity?: number } | null;
+	}, [issPositions]);
+	const { toasts, dismissToast } = useCriticalEventToasts(
+		aircraft as Array<{ squawk?: string | null; callsign?: string | null; icao24?: string }>,
+		seismicEvents as Array<{ magnitude?: number; place?: string; eventId?: string; tsunami?: boolean }>,
+		disastersList as Array<{ alertLevel?: string; title?: string; eventId?: string }>,
+	);
+
+	const handleMapReady = useCallback((m: maplibregl.Map) => { mapRef.current = m; }, []);
+
+	const handleScreenshot = useCallback(() => {
+		const m = mapRef.current;
+		if (!m) return;
+		const canvas = m.getCanvas();
+		const link = document.createElement("a");
+		link.download = `sentinel-x-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.png`;
+		link.href = canvas.toDataURL("image/png");
+		link.click();
+	}, []);
+
+	const handleMeasure = useCallback(() => {
+		setIsMeasuring((prev) => !prev);
+		setMeasureDistance(null);
+	}, []);
+
+	const handleFullscreen = useCallback(() => {
+		const el = document.documentElement;
+		if (!document.fullscreenElement) {
+			el.requestFullscreen?.();
+			setIsFullscreen(true);
+		} else {
+			document.exitFullscreen?.();
+			setIsFullscreen(false);
+		}
+	}, []);
+
+	const handleResetView = useCallback(() => {
+		mapRef.current?.flyTo({
+			center: [INITIAL_VIEW_STATE.longitude, INITIAL_VIEW_STATE.latitude],
+			zoom: INITIAL_VIEW_STATE.zoom,
+			duration: 1200,
+		});
+	}, []);
+
+	const handleViewChange = useCallback((center: { lat: number; lng: number }, zoom: number, bounds: [[number, number], [number, number]] | null) => {
+		setMapCenter(center);
+		setMapZoom(zoom);
+		setMapBounds(bounds);
+	}, []);
+
+	const handleMinimapNavigate = useCallback((lat: number, lng: number) => {
+		mapRef.current?.flyTo({ center: [lng, lat], duration: 800 });
+	}, []);
+
+	const handleGlobeToggle = useCallback(() => {
+		const m = mapRef.current;
+		if (!m) return;
+		const next = !isGlobe;
+		setIsGlobe(next);
+		// MapLibre v4+ globe projection
+		try {
+			if (next) {
+				(m as unknown as { setProjection: (p: { type: string }) => void }).setProjection({ type: "globe" });
+			} else {
+				(m as unknown as { setProjection: (p: { type: string }) => void }).setProjection({ type: "mercator" });
+			}
+		} catch {
+			/* older maplibre */
+		}
+	}, [isGlobe]);
+
+	const handleCorrelationToggle = useCallback(() => {
+		setShowCorrelations((v) => !v);
+	}, []);
+
+	const handleTerminatorToggle = useCallback(() => {
+		setShowTerminator((v) => !v);
+	}, []);
+
+	const handleISSOrbitToggle = useCallback(() => {
+		setShowISSOrbit((v) => !v);
+	}, []);
+
+	// Geofence alert handler
+	const handleGeofenceAlert = useCallback((alert: GeofenceAlert) => {
+		setGeofenceAlerts((prev) => [alert, ...prev].slice(0, 50));
+	}, []);
+
+	// Add to watchlist from entity inspector
+	const handleAddToWatchlist = useCallback((entity: Record<string, unknown>) => {
+		const type = (entity._entityType as string) || detectEntityType(entity);
+		const label = getEntityLabel(entity, type);
+		const id = getEntityId(entity, type);
+		const lat = (entity.latitude as number) || undefined;
+		const lon = (entity.longitude as number) || undefined;
+		watchlist.addItem({ id, type, label, lat, lon, notes: "", meta: entity });
+	}, [watchlist]);
+
+	const TAB_MAP: Record<string, RightTab> = {
+		"1": "alerts", "2": "threats", "3": "analytics", "4": "osint",
+		"5": "sources", "6": "imagery", "7": "watchlist", "8": "geofence",
+		"9": "sitrep", "0": "export",
+	};
+	const handleKeyAction = useCallback((action: string) => {
+		if (action === "escape") { setSelectedEntity(null); return; }
+		if (action === "fullscreen") { handleFullscreen(); return; }
+		if (action === "reset") { handleResetView(); return; }
+		if (action === "measure") { handleMeasure(); return; }
+		if (action === "trails") { setShowTrails((v) => !v); return; }
+		if (action === "screenshot") { handleScreenshot(); return; }
+		if (action.startsWith("tab-")) {
+			const tab = TAB_MAP[action.slice(4)];
+			if (tab) setRightTab(tab);
+		}
+	}, [handleFullscreen, handleResetView, handleMeasure, handleScreenshot]);
+
+	useEffect(() => {
+		const timer = setInterval(() => setTime(new Date()), 1000);
+		return () => clearInterval(timer);
+	}, []);
+
+	const toggleLayer = useCallback((layer: string) => {
+		setLayers((prev: Record<string, boolean>) => ({ ...prev, [layer]: !prev[layer] }));
+	}, []);
+
+	const handleEntitySelect = useCallback((entity: Record<string, unknown> | null) => {
+		setSelectedEntity(entity);
+		if (entity && isMobile) setDrawerOpen(true);
+	}, [isMobile]);
+
+	const handleFlyTo = useCallback((lat: number, lon: number) => {
+		setFlyTo({ lat, lon });
+		if (isMobile) {
+			setMobileTab("map");
+			setDrawerOpen(false);
+		}
+		setTimeout(() => setFlyTo(null), 2000);
+	}, [isMobile]);
+
+	const handleMobileTabChange = useCallback((tab: "map" | "layers" | RightTab) => {
+		if (tab === "map") {
+			setMobileTab("map");
+			setDrawerOpen(false);
+		} else {
+			setMobileTab(tab);
+			setDrawerOpen(true);
+		}
+	}, []);
+
+	// ═══════════════════════════════════════════════════
+	//  MOBILE LAYOUT (< 768px)
+	// ═══════════════════════════════════════════════════
+	if (isMobile) {
+		return (
+			<div className="h-[100dvh] w-screen flex flex-col overflow-hidden bg-slate-950">
+				<div className="scanline" />
+
+				{/* Compact top bar */}
+				<div className="flex items-center justify-between px-2 py-1 border-b border-slate-800/60 bg-slate-950/95 shrink-0">
+					<div className="flex items-center gap-1.5">
+						<span className="text-[10px] font-mono font-bold text-cyan-400 tracking-widest">SENTINEL-X</span>
+						<span className="px-1.5 py-0.5 bg-emerald-900/40 border border-emerald-700/40 rounded text-[7px] font-mono text-emerald-400 tracking-widest">LIVE</span>
+					</div>
+					<div className="text-[9px] font-mono text-emerald-400">
+						{time.toISOString().replace("T", " ").slice(11, 19)}Z
+					</div>
+				</div>
+
+				{/* Map — always rendered, pushed behind drawer */}
+				<div className="flex-1 relative">
+					<MapView layers={layers} onEntitySelect={handleEntitySelect} flyTo={flyTo} onCursorMove={setCursorCoords} onViewChange={handleViewChange} onMapReady={handleMapReady} showTrails={showTrails} />
+
+					{/* Search bar — floating on map */}
+					<div className="absolute top-1 left-1 right-1 z-10">
+						<SearchBar onResultSelect={handleFlyTo} />
+					</div>
+
+					{/* Timeline — bottom-left */}
+					<div className="absolute bottom-2 left-1 z-10">
+						<EnhancedTimeline onTimeChange={setReplayTs} />
+					</div>
+				</div>
+
+				{/* ══ DRAWER — slides up from bottom ══ */}
+				{drawerOpen && (
+					<>
+						{/* Overlay backdrop */}
+						<div className="fixed inset-0 z-40 bg-black/50" onClick={() => setDrawerOpen(false)} />
+						{/* Drawer panel */}
+						<div className="fixed bottom-12 left-0 right-0 z-50 bg-slate-950/98 border-t border-slate-700/60 rounded-t-2xl backdrop-blur-xl max-h-[70dvh] flex flex-col animate-slide-up">
+							{/* Drawer handle */}
+							<div className="flex justify-center py-2 shrink-0" onClick={() => setDrawerOpen(false)}>
+								<div className="w-10 h-1 bg-slate-600 rounded-full" />
+							</div>
+
+							{/* Drawer content */}
+							<div className="flex-1 overflow-y-auto overscroll-contain px-2 pb-2">
+								{selectedEntity && mobileTab === "map" ? (
+									<EntityDetail entity={selectedEntity} onClose={() => { setSelectedEntity(null); setDrawerOpen(false); }} onFlyTo={handleFlyTo} onWatch={handleAddToWatchlist} />
+								) : mobileTab === "layers" ? (
+									<div className="p-2">
+										<LayerControls visibleLayers={layers} onToggle={toggleLayer} activeDomain={activeDomain} onSetDomain={setActiveDomain} />
+									</div>
+								) : mobileTab === "alerts" ? (
+									<AlertPanel />
+								) : mobileTab === "threats" ? (
+									<ThreatBoard onZoneSelect={handleFlyTo} />
+								) : mobileTab === "analytics" ? (
+									<AnalyticsPanel />
+								) : mobileTab === "osint" ? (
+									<NewsFeed onFlyTo={handleFlyTo} />
+								) : mobileTab === "sources" ? (
+									<DataSourcePanel />
+								) : mobileTab === "imagery" ? (
+									<SatelliteImagery mapRef={mapRef} />
+								) : mobileTab === "watchlist" ? (
+									<WatchlistPanel items={watchlist.items} onRemove={watchlist.removeItem} onUpdateNotes={watchlist.updateNotes} onClear={watchlist.clearAll} onFlyTo={handleFlyTo} />
+								) : mobileTab === "geofence" ? (
+									<GeofenceManager mapRef={mapRef} onZonesChange={setGeofenceZones} />
+								) : mobileTab === "sitrep" ? (
+									<SitRepGenerator />
+								) : mobileTab === "darkfleet" ? (
+									<DarkFleetDetector />
+								) : mobileTab === "briefing" ? (
+									<ThreatBriefingPDF />
+								) : mobileTab === "rules" ? (
+									<AlertRulesEngine />
+								) : mobileTab === "export" ? (
+									<ExportPanel />
+								) : null}
+						</div>
+						</div>
+					</>
+				)}
+
+				{/* Entity detail inline if drawer closed but entity selected */}
+				{selectedEntity && !drawerOpen && (
+					<div className="absolute bottom-14 left-1 right-1 z-30">
+						<EntityDetail entity={selectedEntity} onClose={() => setSelectedEntity(null)} onFlyTo={handleFlyTo} onWatch={handleAddToWatchlist} />
+					</div>
+				)}
+
+				{/* ══ BOTTOM NAV BAR ══ */}
+				<div className="flex items-center border-t border-slate-800/60 bg-slate-950/95 shrink-0 z-50 overflow-x-auto">
+					{MOBILE_TABS.map(({ id, label, icon }) => (
+						<button
+							key={id}
+							type="button"
+							onClick={() => handleMobileTabChange(id)}
+							className={`flex-shrink-0 flex flex-col items-center py-1.5 px-2 gap-0.5 transition-colors ${
+								mobileTab === id
+									? id === "threats" ? "text-red-400 bg-red-900/10" : "text-cyan-400 bg-cyan-900/10"
+									: "text-slate-600 active:text-slate-400"
+							}`}
+						>
+							<span className="text-sm">{icon}</span>
+							<span className="text-[7px] font-mono tracking-widest font-bold">{label}</span>
+						</button>
+					))}
+				</div>
+
+				{/* Mobile animation */}
+				<style>{`
+					@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+					.animate-slide-up { animation: slideUp 0.25s ease-out; }
+				`}</style>
+			</div>
+		);
+	}
+
+	// ═══════════════════════════════════════════════════
+	//  DESKTOP LAYOUT (≥ 768px)
+	// ═══════════════════════════════════════════════════
+	const DESKTOP_TABS: RightTab[] = ["alerts", "threats", "analytics", "osint", "sources", "imagery", "watchlist", "geofence", "sitrep", "darkfleet", "briefing", "rules", "export"];
+
+	return (
+		<div className="h-screen w-screen flex flex-col overflow-hidden bg-slate-950">
+			<div className="scanline" />
+			<StatsBar />
+
+			<div className="flex-1 flex overflow-hidden relative">
+				<div className="flex-1 relative flex flex-col">
+					{/* Left sidebar: domain tabs + layer toggles */}
+					<div className="absolute top-2 left-2 z-10 bg-slate-950/80 backdrop-blur-sm border border-slate-800/60 rounded-lg p-1.5 max-h-[calc(100vh-160px)] overflow-y-auto scrollbar-thin">
+						<LayerControls
+							visibleLayers={layers}
+							onToggle={toggleLayer}
+							activeDomain={activeDomain}
+							onSetDomain={setActiveDomain}
+						/>
+						<div className="mt-1.5">
+							<FilterControls filters={filters} onChange={setFilters} />
+						</div>
+						{/* Map overlay toggles */}
+						<div className="mt-1.5 pt-1.5 border-t border-slate-800/40 space-y-1">
+							<button
+								type="button"
+								onClick={() => setShowTrails((v) => !v)}
+								className={`w-full text-left px-2 py-1 rounded text-[9px] font-mono tracking-wider transition-colors ${showTrails ? "bg-cyan-900/30 text-cyan-400 border border-cyan-700/30" : "text-slate-500 hover:text-slate-300"}`}
+							>
+								{showTrails ? "◉" : "○"} AIRCRAFT TRAILS
+							</button>
+							<button
+								type="button"
+								onClick={handleCorrelationToggle}
+								className={`w-full text-left px-2 py-1 rounded text-[9px] font-mono tracking-wider transition-colors ${showCorrelations ? "bg-purple-900/30 text-purple-400 border border-purple-700/30" : "text-slate-500 hover:text-slate-300"}`}
+							>
+								{showCorrelations ? "◉" : "○"} CORRELATIONS
+							</button>
+							<button
+								type="button"
+								onClick={handleGlobeToggle}
+								className={`w-full text-left px-2 py-1 rounded text-[9px] font-mono tracking-wider transition-colors ${isGlobe ? "bg-blue-900/30 text-blue-400 border border-blue-700/30" : "text-slate-500 hover:text-slate-300"}`}
+							>
+								{isGlobe ? "🌐" : "○"} 3D GLOBE
+							</button>
+							<button
+								type="button"
+								onClick={handleTerminatorToggle}
+								className={`w-full text-left px-2 py-1 rounded text-[9px] font-mono tracking-wider transition-colors ${showTerminator ? "bg-indigo-900/30 text-indigo-400 border border-indigo-700/30" : "text-slate-500 hover:text-slate-300"}`}
+							>
+								{showTerminator ? "◉" : "○"} NIGHT/DAY
+							</button>
+							<button
+								type="button"
+								onClick={handleISSOrbitToggle}
+								className={`w-full text-left px-2 py-1 rounded text-[9px] font-mono tracking-wider transition-colors ${showISSOrbit ? "bg-yellow-900/30 text-yellow-400 border border-yellow-700/30" : "text-slate-500 hover:text-slate-300"}`}
+							>
+								{showISSOrbit ? "◉" : "○"} ISS ORBIT
+							</button>
+							<button
+								type="button"
+								onClick={() => setShowSupercluster(v => !v)}
+								className={`w-full text-left px-2 py-1 rounded text-[9px] font-mono tracking-wider transition-colors ${showSupercluster ? "bg-cyan-900/30 text-cyan-400 border border-cyan-700/30" : "text-slate-500 hover:text-slate-300"}`}
+							>
+								{showSupercluster ? "◉" : "○"} CLUSTERS
+							</button>
+							<button
+								type="button"
+								onClick={() => setShow3DTerrain(v => !v)}
+								className={`w-full text-left px-2 py-1 rounded text-[9px] font-mono tracking-wider transition-colors ${show3DTerrain ? "bg-teal-900/30 text-teal-400 border border-teal-700/30" : "text-slate-500 hover:text-slate-300"}`}
+							>
+								{show3DTerrain ? "◉" : "○"} 3D TERRAIN
+							</button>
+						</div>
+					</div>
+
+					{/* Top search bar */}
+					<SearchBar onResultSelect={handleFlyTo} />
+
+					{/* Enhanced Timeline */}
+					<div className="absolute bottom-10 left-2 z-10">
+						<EnhancedTimeline onTimeChange={setReplayTs} />
+					</div>
+
+					{/* Weather Overlay — bottom-right area */}
+					<div className="absolute bottom-44 left-2 z-10">
+						<WeatherOverlay mapRef={mapRef} />
+					</div>
+
+					{/* Map */}
+					<div className="flex-1 relative">
+						<MapView layers={layers} onEntitySelect={handleEntitySelect} flyTo={flyTo} onCursorMove={setCursorCoords} onViewChange={handleViewChange} onMapReady={handleMapReady} showTrails={showTrails} />
+					</div>
+
+					{/* Stats Ring */}
+					<StatsRing />
+
+					{/* Animated critical markers on map */}
+					<CriticalMarkers mapRef={mapRef} aircraft={aircraft} seismicEvents={seismicEvents} disasters={disastersList} />
+
+					{/* Correlation lines overlay */}
+					<CorrelationLines mapRef={mapRef} enabled={showCorrelations} />
+
+					{/* Solar terminator (night/day) */}
+					<SolarTerminator mapRef={mapRef} enabled={showTerminator} />
+
+					{/* ISS orbit track */}
+					<ISSOrbitTrack mapRef={mapRef} enabled={showISSOrbit} issPosition={latestISS} />
+
+					{/* Geofence alerts engine */}
+					<GeofenceAlerts
+						zones={geofenceZones}
+						entities={aircraft as unknown as { latitude?: number; longitude?: number; callsign?: string; icao24?: string; _entityType?: string }[]}
+						onAlert={handleGeofenceAlert}
+						enabled={geofenceZones.length > 0}
+					/>
+
+					{/* Supercluster layer */}
+					<SuperclusterLayer mapRef={mapRef} enabled={showSupercluster} layers={layers} onEntitySelect={handleEntitySelect} />
+
+					{/* 3D Terrain + Buildings */}
+					<TerrainControl mapRef={mapRef} enabled={show3DTerrain} />
+
+					{/* Entity inspector */}
+					<EntityDetail
+						entity={selectedEntity}
+						onClose={() => setSelectedEntity(null)}
+						onFlyTo={handleFlyTo}
+						onWatch={handleAddToWatchlist}
+					/>
+
+					{/* Threat Gauge — bottom-left */}
+					<div className="absolute bottom-28 left-2 z-10">
+						<ThreatGauge />
+					</div>
+
+					{/* Measurement Tools — bottom-left stacked */}
+					<div className="absolute bottom-64 left-2 z-10">
+						<MeasurementTools mapRef={mapRef} />
+					</div>
+
+					{/* Heatmap Timelapse — top-left overlay */}
+					<div className="absolute top-14 left-2 z-10">
+						<HeatmapTimelapse mapRef={mapRef} />
+					</div>
+
+					{/* Map Toolbar — right side */}
+					<MapToolbar
+						onScreenshot={handleScreenshot}
+						onMeasure={handleMeasure}
+						onFullscreen={handleFullscreen}
+						onResetView={handleResetView}
+						cursorCoords={cursorCoords}
+						isFullscreen={isFullscreen}
+						isMeasuring={isMeasuring}
+						measureDistance={measureDistance}
+					/>
+
+					{/* Minimap — bottom-right above zulu time */}
+					<Minimap
+						mainCenter={mapCenter}
+						mainZoom={mapZoom}
+						mainBounds={mapBounds}
+						onNavigate={handleMinimapNavigate}
+					/>
+
+					{/* Critical Event Toasts */}
+					<NotificationToast toasts={toasts} onDismiss={dismissToast} />
+					<KeyboardShortcuts onAction={handleKeyAction} />
+
+					{/* Classification Banner */}
+					<div className="absolute top-3 right-16 z-10 flex items-center gap-2">
+						<DataHealthBar />
+						{isGlobe && (
+							<div className="px-2 py-0.5 bg-blue-900/40 border border-blue-700/40 rounded text-[8px] font-mono font-bold text-blue-400 tracking-widest">
+								🌐 GLOBE
+							</div>
+						)}
+						{showCorrelations && (
+							<div className="px-2 py-0.5 bg-purple-900/40 border border-purple-700/40 rounded text-[8px] font-mono font-bold text-purple-400 tracking-widest">
+								⟁ CORR
+							</div>
+						)}
+						{showTerminator && (
+							<div className="px-2 py-0.5 bg-indigo-900/40 border border-indigo-700/40 rounded text-[8px] font-mono font-bold text-indigo-400 tracking-widest">
+								🌙 N/D
+							</div>
+						)}
+						{showISSOrbit && (
+							<div className="px-2 py-0.5 bg-yellow-900/40 border border-yellow-700/40 rounded text-[8px] font-mono font-bold text-yellow-400 tracking-widest">
+								🛰 ISS
+							</div>
+						)}
+						{geofenceAlerts.length > 0 && (
+							<div className="px-2 py-0.5 bg-red-900/40 border border-red-700/40 rounded text-[8px] font-mono font-bold text-red-400 tracking-widest animate-pulse">
+								⬡ {geofenceAlerts.length} ZONE ALERT{geofenceAlerts.length > 1 ? "S" : ""}
+							</div>
+						)}
+						{showSupercluster && (
+							<div className="px-2 py-0.5 bg-cyan-900/40 border border-cyan-700/40 rounded text-[8px] font-mono font-bold text-cyan-400 tracking-widest">
+								⬢ CLUSTERS
+							</div>
+						)}
+						{show3DTerrain && (
+							<div className="px-2 py-0.5 bg-teal-900/40 border border-teal-700/40 rounded text-[8px] font-mono font-bold text-teal-400 tracking-widest">
+								▲ 3D
+							</div>
+						)}
+						<div className="px-2 py-0.5 bg-emerald-900/40 border border-emerald-700/40 rounded text-[9px] font-mono font-bold text-emerald-400 tracking-widest">
+							UNCLASSIFIED // FOUO
+						</div>
+					</div>
+
+					{/* Zulu Time */}
+					<div className="absolute bottom-12 right-2 z-10 flex items-center gap-3">
+						<div className="bg-black/70 backdrop-blur-sm text-[10px] font-mono text-slate-400 px-2 py-1 rounded border border-slate-700/50">
+							<span className="text-emerald-400 font-bold">
+								{time.toISOString().replace("T", " ").slice(0, 19)}Z
+							</span>
+						</div>
+					</div>
+
+					{/* Toggle Right Panel */}
+					<button
+						type="button"
+						onClick={() => setShowRightPanel(!showRightPanel)}
+						className="absolute top-3 right-3 z-10 p-1.5 bg-slate-900/80 border border-slate-700/50 rounded hover:bg-slate-800/80 transition-colors"
+						title="Toggle panel"
+					>
+						<svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={showRightPanel ? "M9 5l7 7-7 7" : "M15 19l-7-7 7-7"} />
+						</svg>
+					</button>
+				</div>
+
+				{/* Right Panel */}
+				{showRightPanel && (
+					<div className="w-80 shrink-0 flex flex-col bg-slate-950/90 border-l border-slate-800/60">
+						<div className="flex border-b border-slate-800/60 overflow-x-auto scrollbar-thin">
+							{DESKTOP_TABS.map((tab) => (
+								<button
+									key={tab}
+									type="button"
+									onClick={() => setRightTab(tab)}
+									className={`shrink-0 px-2 py-1.5 text-[8px] font-mono font-bold tracking-widest transition-colors ${
+										rightTab === tab
+											? tab === "threats"
+												? "text-red-400 bg-slate-900/60 border-b-2 border-red-400"
+												: tab === "analytics"
+												? "text-amber-400 bg-slate-900/60 border-b-2 border-amber-400"
+												: "text-emerald-400 bg-slate-900/60 border-b-2 border-emerald-400"
+											: "text-slate-600 hover:text-slate-400"
+									}`}
+								>
+									{tab === "analytics" ? "📊" : tab === "watchlist" ? "📌" : tab === "darkfleet" ? "🚢" : tab === "briefing" ? "📄" : tab === "rules" ? "⚡" : ""}{tab.toUpperCase()}
+								</button>
+							))}
+						</div>
+						<div className="flex-1 overflow-hidden">
+							{rightTab === "alerts" && <AlertPanel />}
+							{rightTab === "threats" && <ThreatBoard onZoneSelect={handleFlyTo} />}
+							{rightTab === "analytics" && <AnalyticsPanel />}
+							{rightTab === "osint" && <NewsFeed onFlyTo={handleFlyTo} />}
+							{rightTab === "sources" && <DataSourcePanel />}
+							{rightTab === "imagery" && <SatelliteImagery mapRef={mapRef} />}
+							{rightTab === "watchlist" && <WatchlistPanel items={watchlist.items} onRemove={watchlist.removeItem} onUpdateNotes={watchlist.updateNotes} onClear={watchlist.clearAll} onFlyTo={handleFlyTo} />}
+							{rightTab === "geofence" && <div className="overflow-y-auto flex-1 h-full"><GeofenceManager mapRef={mapRef} onZonesChange={setGeofenceZones} /></div>}
+							{rightTab === "sitrep" && <div className="overflow-y-auto flex-1 h-full"><SitRepGenerator /></div>}
+							{rightTab === "darkfleet" && <div className="overflow-y-auto flex-1 h-full p-2"><DarkFleetDetector /></div>}
+							{rightTab === "briefing" && <div className="overflow-y-auto flex-1 h-full p-2"><ThreatBriefingPDF /></div>}
+							{rightTab === "export" && <ExportPanel />}
+							{rightTab === "rules" && <div className="overflow-y-auto flex-1 h-full"><AlertRulesEngine /></div>}
+						</div>
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
+
+/* ═══════════════════════ Entity helpers for watchlist ═══════════════════════ */
+function detectEntityType(entity: Record<string, unknown>): string {
+	if (entity.icao24) return "aircraft";
+	if (entity.mmsi) return "vessel";
+	if (entity.magnitude) return "seismic";
+	if (entity.fatalities !== undefined) return "conflict";
+	if (entity.brightness) return "fire";
+	if (entity.alertLevel) return "disaster";
+	if (entity.threatId) return "cyber";
+	if (entity.h3Index) return "jamming";
+	if (entity.subreddit) return "social";
+	if (entity.satId || entity.satName) return "satellite";
+	if (entity.windSpeed !== undefined) return "weather";
+	if (entity.gdeltId || entity.sourceUrl) return "gdelt";
+	return "unknown";
+}
+
+function getEntityLabel(entity: Record<string, unknown>, type: string): string {
+	switch (type) {
+		case "aircraft": return (entity.callsign as string) || (entity.icao24 as string) || "Unknown";
+		case "vessel": return (entity.name as string) || (entity.mmsi as string) || "Unknown";
+		case "seismic": return `M${entity.magnitude} ${(entity.place as string) || ""}`;
+		case "conflict": return (entity.location as string) || (entity.eventId as string) || "Conflict";
+		case "fire": return `Fire ${(entity.confidence as string) || ""} @ ${(entity.latitude as number)?.toFixed(2)}`;
+		case "disaster": return (entity.title as string) || "Disaster";
+		case "cyber": return (entity.description as string)?.slice(0, 60) || "Cyber Threat";
+		case "jamming": return `GNSS Jam ${(entity.region as string) || ""}`;
+		case "social": return (entity.title as string) || "OSINT Post";
+		case "satellite": return (entity.satName as string) || "Satellite";
+		default: return (entity.title as string) || (entity.name as string) || "Entity";
+	}
+}
+
+function getEntityId(entity: Record<string, unknown>, type: string): string {
+	switch (type) {
+		case "aircraft": return `ac-${entity.icao24}`;
+		case "vessel": return `vs-${entity.mmsi}`;
+		case "seismic": return `eq-${entity.eventId}`;
+		case "conflict": return `cf-${entity.eventId}`;
+		case "fire": return `fr-${entity.sourceId}`;
+		case "disaster": return `ds-${entity.eventId}`;
+		case "cyber": return `cy-${entity.threatId}`;
+		case "jamming": return `jm-${entity.alertId}`;
+		default: return `e-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+	}
+}

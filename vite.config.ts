@@ -1,17 +1,17 @@
-import build from '@hono/vite-build/cloudflare-pages'
-import devServer from '@hono/vite-dev-server'
-import adapter from '@hono/vite-dev-server/cloudflare'
-import { defineConfig } from 'vite'
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import path from "path";
+import { fileURLToPath } from "url";
+import { defineConfig } from "vite";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  plugins: [
-    build(),
-    devServer({
-      adapter,
-      entry: 'src/index.tsx'
-    })
-  ],
-  build: {
-    outDir: 'dist',
-  }
-})
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+    },
+  },
+  cacheDir: "/tmp/vite-cache",
+});
