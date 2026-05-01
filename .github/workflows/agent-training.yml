@@ -1,0 +1,230 @@
+name: SENTINEL-X Agent Training Pipeline
+
+on:
+  schedule:
+    # Every Monday at 2am UTC
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: 'Agent to train'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - classifier
+          - anomaly
+          - curator
+
+env:
+  GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  train-agents:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -q \
+            langchain-groq \
+            langchain \
+            sentence-transformers \
+            torch \
+            pandas \
+            numpy \
+            scikit-learn \
+            scipy \
+            wandb \
+            datasets \
+            peft \
+            transformers \
+            pydantic
+      
+      - name: Train Classifier Agent
+        if: github.event.inputs.agent == 'all' || github.event.inputs.agent == 'classifier' || !github.event.inputs.agent
+        env:
+          AGENT: classifier
+        run: |
+          python agents/training/train_agents.py --agent classifier --epochs 3 --output results/
+      
+      - name: Train Anomaly Detector
+        if: github.event.inputs.agent == 'all' || github.event.inputs.agent == 'anomaly' || !github.event.inputs.agent
+        env:
+          AGENT: anomaly
+        run: |
+          python agents/training/train_agents.py --agent anomaly --epochs 3 --output results/
+      
+      - name: Run Dataset Curator
+        if: github.event.inputs.agent == 'all' || github.event.inputs.agent == 'curator' || !github.event.inputs.agent
+        env:
+          AGENT: curator
+        run: |
+          python agents/training/train_agents.py --agent curator --epochs 1 --output results/
+      
+      - name: Compare metrics
+        run: |
+          python -c "
+          import json
+          import os
+          from pathlib import Path
+          
+          results_dir = Path('results')
+          if not results_dir.exists():
+              print('No results found')
+              exit(0)
+          
+          combined = {}
+          for f in results_dir.glob('*.json'):
+              with open(f) as fp:
+                  data = json.load(fp)
+                  combined[f.stem] = data
+          
+          print('Training Results:')
+          print(json.dumps(combined, indent=2))
+          
+          # Save combined
+          with open('results/combined.json', 'w') as fp:
+              json.dump(combined, fp, indent=2)
+          "
+      
+      - name: Commit results
+        run: |
+          git config user.name "Agent-Bot"
+          git config user.email "bot@sentinel-x.dev"
+          git add results/
+          git commit -m "🤖 Auto-train agents: $(date +%Y-%m-%d)" || true
+          git push || true
+      
+      - name: Push to HuggingFace Hub
+        if: success()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -n "$HF_TOKEN" ]; then
+            pip install -q huggingface_hub
+            echo "HF_TOKEN configured - model push skipped in CI"
+          fi
+      
+      - name: Notify Slack
+        if: always()
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: |
+            {
+              "text": "🤖 SENTINEL-X Agent Training Complete",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Weekly Agent Training*\nStatus: ${{ job.status }}\nAgent: ${{ github.event.inputs.agent || 'all' }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  test-agents:
+    runs-on: ubuntu-latest
+    needs: train-agents
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Test Classifier
+        run: |
+          python -c "
+          import asyncio
+          import os
+          os.environ['GROQ_API_KEY'] = 'test'
+          
+          from agents.classifier_agent import EntityClassifierAgent
+          
+          async def test():
+              agent = EntityClassifierAgent('test')
+              result = await agent.classify({
+                  'entity_id': 'test-001',
+                  'velocity': 450,
+                  'altitude': 35000,
+                  'signal_strength': 0.8
+              })
+              print(f'Classification: {result}')
+              assert result['class'] in ['normal', 'suspicious', 'anomaly', 'unknown']
+              print('✅ Classifier test passed')
+          
+          asyncio.run(test())
+          "
+      
+      - name: Test Anomaly Detector
+        run: |
+          python -c "
+          import asyncio
+          import os
+          os.environ['GROQ_API_KEY'] = 'test'
+          
+          from agents.anomaly_detector_agent import AnomalyDetectorAgent
+          
+          async def test():
+              agent = AnomalyDetectorAgent('test')
+              result = await agent.detect_ensemble('test-001', {
+                  'velocity': 450,
+                  'altitude': 35000
+              })
+              print(f'Anomaly detection: {result}')
+              assert 'anomaly' in result
+              print('✅ Anomaly detector test passed')
+          
+          asyncio.run(test())
+          "
+      
+      - name: Test Dataset Curator
+        run: |
+          python -c "
+          import asyncio
+          import os
+          os.environ['GROQ_API_KEY'] = 'test'
+          
+          from agents.dataset_curator_agent import DatasetCuratorAgent
+          
+          async def test():
+              agent = DatasetCuratorAgent('test')
+              result = await agent.curate_batch(batch_size=5)
+              print(f'Curation: {result}')
+              assert result['status'] in ['success', 'quality_check_failed']
+              print('✅ Dataset curator test passed')
+          
+          asyncio.run(test())
+          "
+
+  deploy-model:
+    runs-on: ubuntu-latest
+    needs: test-agents
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Build Docker image
+        run: |
+          docker build -t sentinel-x-agents:${{ github.sha }} .
+      
+      - name: Deploy to registry
+        run: |
+          echo "Deploy steps would go here"
