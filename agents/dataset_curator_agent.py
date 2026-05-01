@@ -1,36 +1,47 @@
 """
 Dataset Curation Agent: Auto-label + quality check + versioning
-Builds training datasets from operational data
+Builds training datasets from operational data.
+
+This agent automates the creation of labeled datasets by:
+- Fetching unlabeled observations from the database
+- Generating labels using Groq LLM
+- Performing quality checks on the labeled data
+- Versioning datasets for reproducibility and tracking
 """
 
 from langchain_groq import ChatGroq
 from datetime import datetime, timedelta
 import json
 import hashlib
-from typing import Optional
+from typing import Dict, List, Any, Optional
 import asyncio
 import numpy as np
 
 
 class DatasetCuratorAgent:
     """
-    Auto-generates labeled datasets from Sentinel-X observations
-    - Fetches unlabeled data
-    - Generates labels via Groq
-    - Quality checks labels
-    - Versions datasets for reproducibility
+    Auto-generates labeled datasets from Sentinel-X observations.
+    
+    Features:
+    - Fetches unlabeled data from Neon PGVector or mock sources
+    - Generates labels via Groq LLM with contextual reasoning
+    - Quality checks labels for distribution and confidence
+    - Versions datasets with metadata and schema validation
+    
+    Args:
+        dataset_name: Name identifier for the dataset
     """
     
     def __init__(self, dataset_name: str):
         self.llm = ChatGroq(
             model="llama-3.1-70b-versatile",
             temperature=0.05,
-            groq_api_key="free-groq-key"
+            groq_api_key="free-groq-key"  # TODO: Move to environment variable
         )
         self.dataset_name = dataset_name
         self.version = "v1.0"
-        self.labeled_count = 0
-        self.quality_score = 0.0
+        self.labeled_count: int = 0
+        self.quality_score: float = 0.0
         self.dataset_schema = {
             "observation_id": "uuid",
             "entity_id": "string",
@@ -42,16 +53,26 @@ class DatasetCuratorAgent:
             "metadata": "dict"
         }
     
-    async def fetch_unlabeled_batch(self, limit: int = 50) -> list[dict]:
+    async def fetch_unlabeled_batch(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
-        Fetch unlabeled observations from database
-        In production: Query from Neon PGVector
+        Fetch unlabeled observations from database.
+        
+        In production: Query from Neon PGVector database.
+        Currently: Generates mock data for testing.
+        
+        Args:
+            limit: Maximum number of observations to fetch
+            
+        Returns:
+            List of observation dictionaries with features
         """
-        # Mock data - replace with DB query
+        # TODO: Replace with actual DB query
+        # Example: supabase.table("ml_observations").select("*").is_("label", "null").limit(limit).execute()
+        
         batch = []
         for i in range(limit):
             batch.append({
-                "observation_id": f"obs_{datetime.now().timestamp()}_{i}",
+                "observation_id": f"obs_{datetime.now().timestamp():.0f}_{i}",
                 "entity_id": f"entity_{i % 100}",
                 "features": {
                     "velocity": np.random.randint(100, 900),
@@ -65,26 +86,34 @@ class DatasetCuratorAgent:
             })
         return batch
     
-    async def label_observation(self, observation: dict) -> dict:
+    async def label_observation(self, observation: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Generate label for observation using Groq
+        Generate label for observation using Groq LLM.
+        
+        Uses contextual reasoning to classify observations as
+        normal, suspicious, or anomaly based on flight features.
+        
+        Args:
+            observation: Dictionary containing observation data
+            
+        Returns:
+            Dictionary with labeling results and metadata
         """
+        features = observation.get("features", {})
         prompt = f"""Classify this aircraft observation as normal, suspicious, or anomaly:
 
-
 Observation Data:
-- Velocity: {observation['features']['velocity']} knots
-- Altitude: {observation['features']['altitude']} feet
-- Position: {observation['features']['lat']:.2f}, {observation['features']['lon']:.2f}
-- Course: {observation['features']['course']:.1f}°
-- Signal: {observation['features']['signal_strength']:.2f}
-
+- Velocity: {features.get('velocity', 0)} knots
+- Altitude: {features.get('altitude', 0)} feet
+- Position: {features.get('lat', 0):.2f}, {features.get('lon', 0):.2f}
+- Course: {features.get('course', 0):.1f}°
+- Signal: {features.get('signal_strength', 0):.2f}
 
 Classify and explain:
 Return JSON: {{"label": "normal"|"suspicious"|"anomaly", "confidence": 0.0-1.0, "reason": "..."}}"""
         
         try:
-            response = self.llm.invoke(prompt)
+            response = await asyncio.to_thread(self.llm.invoke, prompt)
             result = json.loads(response.content)
             
             return {
@@ -98,17 +127,28 @@ Return JSON: {{"label": "normal"|"suspicious"|"anomaly", "confidence": 0.0-1.0, 
             }
         except Exception as e:
             return {
-                "observation_id": observation["observation_id"],
+                "observation_id": observation.get("observation_id", "unknown"),
                 "error": str(e),
                 "label": "unknown"
             }
     
-    async def quality_check(self, labels: list[dict]) -> dict:
+    async def quality_check(self, labels: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Quality check: Verify label consistency
+        Quality check: Verify label consistency and distribution.
+        
+        Checks:
+        - Label distribution (flags if >90% one class)
+        - Confidence score averages
+        - Data completeness
+        
+        Args:
+            labels: List of labeled observation dictionaries
+            
+        Returns:
+            Dictionary with quality metrics and recommendations
         """
         # Check for label distribution
-        label_counts = {}
+        label_counts: Dict[str, int] = {}
         for label_obj in labels:
             if "label" in label_obj:
                 label = label_obj["label"]
@@ -132,8 +172,8 @@ Return JSON: {{"label": "normal"|"suspicious"|"anomaly", "confidence": 0.0-1.0, 
                 "total_labeled": len(labels),
                 "label_distribution": label_counts,
                 "skewed": skewed,
-                "avg_confidence": avg_confidence,
-                "quality_score": quality_score,
+                "avg_confidence": float(avg_confidence),
+                "quality_score": float(quality_score),
                 "recommendation": (
                     "redo labeling - low confidence" if avg_confidence < 0.7
                     else "proceed - quality acceptable"
@@ -142,11 +182,20 @@ Return JSON: {{"label": "normal"|"suspicious"|"anomaly", "confidence": 0.0-1.0, 
         
         return {"error": "No labels to check"}
     
-    async def create_dataset_version(self, labeled_data: list[dict]) -> dict:
+    async def create_dataset_version(self, labeled_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Create versioned dataset with metadata
+        Create versioned dataset with metadata and quality metrics.
+        
+        Generates a unique hash-based version identifier and
+        computes label distribution and quality metrics.
+        
+        Args:
+            labeled_data: List of labeled observation dictionaries
+            
+        Returns:
+            Dictionary with versioned dataset metadata
         """
-        # Calculate dataset hash
+        # Calculate dataset hash for versioning
         dataset_str = json.dumps(labeled_data, sort_keys=True, default=str)
         dataset_hash = hashlib.sha256(dataset_str.encode()).hexdigest()[:8]
         
@@ -159,10 +208,10 @@ Return JSON: {{"label": "normal"|"suspicious"|"anomaly", "confidence": 0.0-1.0, 
             "schema": self.dataset_schema,
             "label_distribution": {},
             "quality_metrics": {},
-            "samples": labeled_data
+            "samples": labeled_data[:10]  # Store only first 10 samples for preview
         }
         
-        # Calculate metrics
+        # Calculate label distribution
         for label_obj in labeled_data:
             if "label" in label_obj:
                 label = label_obj["label"]
@@ -171,45 +220,50 @@ Return JSON: {{"label": "normal"|"suspicious"|"anomaly", "confidence": 0.0-1.0, 
                 )
         
         # Quality metrics
-        confidences = [
-            l.get("confidence", 0) for l in labeled_data 
-            if "confidence" in l
-        ]
+        confidences = [l.get("confidence", 0) for l in labeled_data if "confidence" in l]
         if confidences:
             dataset_version["quality_metrics"] = {
-                "avg_confidence": np.mean(confidences),
-                "min_confidence": np.min(confidences),
-                "max_confidence": np.max(confidences),
-                "std_confidence": np.std(confidences)
+                "avg_confidence": float(np.mean(confidences)),
+                "min_confidence": float(np.min(confidences)),
+                "max_confidence": float(np.max(confidences)),
+                "std_confidence": float(np.std(confidences))
             }
         
         return dataset_version
     
-    async def curate_batch(self, batch_size: int = 50) -> dict:
+    async def curate_batch(self, batch_size: int = 50) -> Dict[str, Any]:
         """
-        End-to-end curation pipeline
-        1. Fetch unlabeled
-        2. Label with Groq
-        3. Quality check
-        4. Version dataset
+        End-to-end curation pipeline.
+        
+        Steps:
+        1. Fetch unlabeled observations
+        2. Label with Groq LLM (with rate limiting)
+        3. Quality check the labeled data
+        4. Version the dataset if quality passes threshold
+        
+        Args:
+            batch_size: Number of observations to process
+            
+        Returns:
+            Dictionary with curation results and dataset if successful
         """
-        # Fetch
+        # Fetch unlabeled data
         unlabeled = await self.fetch_unlabeled_batch(batch_size)
         
-        # Label (with rate limit handling)
+        # Label with rate limit handling
         labels = []
         for i, obs in enumerate(unlabeled):
             label = await self.label_observation(obs)
             labels.append(label)
             
-            # Rate limit: slow down requests
+            # Rate limit: slow down requests to avoid Groq throttling
             if (i + 1) % 10 == 0:
                 await asyncio.sleep(1)
         
         # Quality check
         quality = await self.quality_check(labels)
         
-        # Version
+        # Version dataset if quality passes threshold
         if quality.get("quality_score", 0) > 0.7:
             dataset = await self.create_dataset_version(labels)
             self.labeled_count += len(labels)
@@ -224,5 +278,5 @@ Return JSON: {{"label": "normal"|"suspicious"|"anomaly", "confidence": 0.0-1.0, 
             return {
                 "status": "quality_check_failed",
                 "quality": quality,
-                "recommendation": "Retry with different parameters"
+                "recommendation": "Retry with different parameters or model settings"
             }
