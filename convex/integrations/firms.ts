@@ -2,6 +2,8 @@
  * NASA FIRMS — Active Fire / Thermal Anomaly Detection
  * Polls VIIRS SNPP NRT data for global fire hotspots.
  * https://firms.modaps.eosdis.nasa.gov/api/
+ * 
+ * Circuit breaker: If 5 consecutive failures, circuit opens and returns cached data
  */
 import { internalAction, internalMutation } from "../_generated/server";
 import { internal, api } from "../_generated/api";
@@ -80,13 +82,16 @@ export const fetchFires = internalAction({
 			}
 
 			await ctx.runMutation(internal.integrations.firms.storeFires, { fires: allFires });
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "firms", name: "NASA FIRMS", status: "online", recordCount: allFires.length,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "firms",
+				success: allFires.length > 0,
+				recordCount: allFires.length,
 			});
 			await ctx.runMutation(internal.integrations.helpers.upsertStat, { key: "fireHotspots", value: allFires.length });
 		} catch (e) {
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "firms", name: "NASA FIRMS", status: "error", recordCount: 0,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "firms",
+				success: false,
 				errorMessage: String(e),
 			});
 		}

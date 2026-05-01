@@ -1,6 +1,8 @@
 /**
  * NewsAPI — OSINT geopolitical news feed
  * https://newsapi.org/docs/endpoints/everything
+ * 
+ * Circuit breaker: If 5 consecutive failures, circuit opens and returns cached data
  */
 import { internalAction, internalMutation } from "../_generated/server";
 import { internal, api } from "../_generated/api";
@@ -98,12 +100,15 @@ export const fetchNews = internalAction({
 			}
 
 			await ctx.runMutation(internal.integrations.newsapi.storeNews, { items: allNews });
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "newsapi", name: "NewsAPI OSINT", status: "online", recordCount: allNews.length,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "newsapi",
+				success: allNews.length > 0,
+				recordCount: allNews.length,
 			});
 		} catch (e) {
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "newsapi", name: "NewsAPI OSINT", status: "error", recordCount: 0,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "newsapi",
+				success: false,
 				errorMessage: String(e),
 			});
 		}

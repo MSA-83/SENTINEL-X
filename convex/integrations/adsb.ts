@@ -1,6 +1,8 @@
 /**
  * ADS-B Exchange via RapidAPI — Live aircraft tracking
  * https://rapidapi.com/adsbx/api/adsbexchange-com1
+ * 
+ * Circuit breaker: If 5 consecutive failures, circuit opens and returns cached data
  */
 import { internalAction, internalMutation } from "../_generated/server";
 import { internal, api } from "../_generated/api";
@@ -128,16 +130,16 @@ export const fetchAircraft = internalAction({
 				await ctx.runMutation(internal.integrations.adsb.storeAircraft, { aircraft });
 			}
 
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
 				sourceId: "adsb",
-				name: "ADS-B Exchange",
-				status: aircraft.length > 0 ? "online" : "degraded",
+				success: aircraft.length > 0,
 				recordCount: aircraft.length,
 			});
 			await ctx.runMutation(internal.integrations.helpers.upsertStat, { key: "liveAircraft", value: aircraft.length });
 		} catch (e) {
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "adsb", name: "ADS-B Exchange", status: "error", recordCount: 0,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "adsb",
+				success: false,
 				errorMessage: String(e),
 			});
 		}
@@ -166,13 +168,15 @@ export const storeAircraft = internalMutation({
 	handler: async (ctx, args) => {
 		const now = Date.now();
 		for (const ac of args.aircraft) {
+			const icaoKey = ac.icao24.toUpperCase();
 			const existing = await ctx.db
 				.query("aircraft")
-				.withIndex("by_icao24", (q) => q.eq("icao24", ac.icao24))
+				.withIndex("by_icao24", (q) => q.eq("icao24", icaoKey))
 				.first();
 
 			const data = {
 				...ac,
+				icao24: icaoKey,
 				jammingFlag: false,
 				lastUpdate: now,
 				source: "adsb_live" as const,

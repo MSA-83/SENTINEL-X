@@ -1,6 +1,8 @@
 /**
  * OpenWeatherMap — Weather data for key Areas of Interest
  * https://openweathermap.org/current
+ * 
+ * Circuit breaker: If 5 consecutive failures, circuit opens and returns cached data
  */
 import { internalAction, internalMutation } from "../_generated/server";
 import { internal, api } from "../_generated/api";
@@ -76,12 +78,15 @@ export const fetchWeather = internalAction({
 			}
 
 			await ctx.runMutation(internal.integrations.openweather.storeWeather, { entries: results });
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "openweather", name: "OpenWeatherMap", status: "online", recordCount: results.length,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "openweather",
+				success: results.length > 0,
+				recordCount: results.length,
 			});
 		} catch (e) {
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "openweather", name: "OpenWeatherMap", status: "error", recordCount: 0,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "openweather",
+				success: false,
 				errorMessage: String(e),
 			});
 		}

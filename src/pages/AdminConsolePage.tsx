@@ -211,30 +211,46 @@ function UserManagement() {
 }
 
 function SourceManagement() {
-	const sources = useQuery(api.entities.listDataSourceStatus) ?? [];
+	const feeds = useQuery(api.admin.getFeedHealth) ?? [];
+	const resetCircuit = useMutation(api.admin.resetCircuitBreaker);
 
 	return (
 		<div>
-			<h3 className="text-xs font-mono text-slate-500 mb-4">DATA SOURCE STATUS ({sources.length} sources)</h3>
+			<h3 className="text-xs font-mono text-slate-500 mb-4">DATA SOURCE STATUS ({feeds.length} sources)</h3>
 			<div className="grid grid-cols-2 gap-3">
-				{sources.map((s) => {
-					const isOnline = s.status === "online" || s.status === "ok";
+				{feeds.map((s) => {
+					const isOnline = s.status === "online" || s.status === "ok" || s.circuitState === "closed";
+					const isOpen = s.circuitState === "open";
+					const isHalfOpen = s.circuitState === "half-open";
 					const isDegraded = s.status === "degraded";
 					return (
 						<div key={s.sourceId} className={`bg-slate-900/50 border rounded-lg p-4 ${
-							isOnline ? "border-green-500/30" : isDegraded ? "border-amber-500/30" : "border-red-500/30"
+							isOnline ? "border-green-500/30" : isOpen ? "border-red-500/50" : isHalfOpen ? "border-amber-500/50" : "border-red-500/30"
 						}`}>
 							<div className="flex items-center justify-between mb-2">
 								<div className="flex items-center gap-2">
-									<span className={`w-2 h-2 rounded-full ${isOnline ? "bg-green-400 animate-pulse" : isDegraded ? "bg-amber-400" : "bg-red-400"}`} />
+									<span className={`w-2 h-2 rounded-full ${
+										isOnline ? "bg-green-400 animate-pulse" : isOpen ? "bg-red-500 animate-pulse" : isHalfOpen ? "bg-amber-400 animate-pulse" : "bg-red-400"
+									}`} />
 									<span className="text-sm font-mono text-slate-200">{s.name}</span>
 								</div>
-								<span className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
-									isOnline ? "bg-green-500/10 text-green-400" : isDegraded ? "bg-amber-500/10 text-amber-400" : "bg-red-500/10 text-red-400"
-								}`}>{s.status.toUpperCase()}</span>
+								<div className="flex items-center gap-1">
+									<span className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+										isOnline ? "bg-green-500/10 text-green-400" : isOpen ? "bg-red-500/10 text-red-400" : isHalfOpen ? "bg-amber-500/10 text-amber-400" : "bg-red-500/10 text-red-400"
+									}`}>{s.circuitState.toUpperCase()}</span>
+									{isOpen && (
+										<button
+											onClick={() => resetCircuit({ sourceId: s.sourceId })}
+											className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20"
+										>
+											RESET
+										</button>
+									)}
+								</div>
 							</div>
 							<div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
 								<span>{s.recordCount.toLocaleString()} records</span>
+								<span>{s.consecutiveFailures > 0 ? `${s.consecutiveFailures} fail(s)` : "healthy"}</span>
 								<span>Last: {new Date(s.lastFetch).toLocaleTimeString()}</span>
 							</div>
 							{s.errorMessage && (

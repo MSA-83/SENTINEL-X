@@ -1,5 +1,7 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
+
+const EDGE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // ==================== NODE QUERIES ====================
 
@@ -188,6 +190,7 @@ export const createEdge = mutation({
 			source: args.source,
 			firstSeen: now,
 			lastSeen: now,
+			expiresAt: now + EDGE_TTL_MS,
 		});
 		return edgeId;
 	},
@@ -201,5 +204,22 @@ export const deleteEdge = mutation({
 			.withIndex("by_edgeId", (q) => q.eq("edgeId", args.edgeId))
 			.first();
 		if (existing) await ctx.db.delete(existing._id);
+	},
+});
+
+export const purgeExpiredEdges = internalMutation({
+	args: {},
+	handler: async (ctx) => {
+		const now = Date.now();
+		const expired = await ctx.db
+			.query("kgEdges")
+			.withIndex("by_expiresAt", (q) => q.lt("expiresAt", now))
+			.collect();
+		let deleted = 0;
+		for (const edge of expired) {
+			await ctx.db.delete(edge._id);
+			deleted++;
+		}
+		return { deleted };
 	},
 });

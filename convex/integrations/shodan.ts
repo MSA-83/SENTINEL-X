@@ -1,6 +1,8 @@
 /**
  * Shodan — Exposed infrastructure / cyber threat layer
  * https://developer.shodan.io/api
+ * 
+ * Circuit breaker: If 5 consecutive failures, circuit opens and returns cached data
  */
 import { internalAction, internalMutation } from "../_generated/server";
 import { internal, api } from "../_generated/api";
@@ -100,10 +102,9 @@ export const fetchCyberThreats = internalAction({
 		}
 
 		await ctx.runMutation(internal.integrations.shodan.storeThreats, { threats });
-		await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
+		await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
 			sourceId: "cyber",
-			name: "Cyber Intel (Shodan + Abuse.ch)",
-			status: threats.length > 0 ? "online" : "degraded",
+			success: threats.length > 0,
 			recordCount: threats.length,
 		});
 		return null;

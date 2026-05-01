@@ -225,6 +225,10 @@ const schema = defineSchema({
 		lastFetch: v.number(),
 		recordCount: v.number(),
 		errorMessage: v.optional(v.string()),
+		consecutiveFailures: v.optional(v.number()),
+		circuitState: v.optional(v.string()),
+		lastFailureAt: v.optional(v.number()),
+		recoveryTimeout: v.optional(v.number()),
 	}).index("by_sourceId", ["sourceId"]),
 
 	// ==================== NEW: REFERENCE REPO FEATURES ====================
@@ -420,17 +424,19 @@ const schema = defineSchema({
 		edgeId: v.string(),
 		sourceNodeId: v.string(),
 		targetNodeId: v.string(),
-		relationship: v.string(), // "owns" | "visited" | "linked_to" | "transmitted_to" | "observed_near" | "sanctioned_by" | "operates" | "crewed_by"
+		relationship: v.string(),
 		confidence: v.number(),
 		properties: v.optional(v.string()),
-		source: v.string(), // data source
+		source: v.string(),
 		firstSeen: v.number(),
 		lastSeen: v.number(),
+		expiresAt: v.optional(v.number()),
 	})
 		.index("by_edgeId", ["edgeId"])
 		.index("by_sourceNodeId", ["sourceNodeId"])
 		.index("by_targetNodeId", ["targetNodeId"])
-		.index("by_relationship", ["relationship"]),
+		.index("by_relationship", ["relationship"])
+		.index("by_expiresAt", ["expiresAt"]),
 
 	// ==================== WORKSPACES ====================
 

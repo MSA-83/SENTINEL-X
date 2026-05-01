@@ -1,33 +1,69 @@
-# Dependencies
-node_modules/
-
-# Build output
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Environment variables
-.env
-.env.local
-.env.*.local
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
 
-# Convex generated files
-convex/_generated/
-
-# IDE
+# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
-# Logs
+# Project specific
+.env
+.env.*
 *.log
-npm-debug.log*
-bun.lockb
+datasets/raw/
+datasets/processed/
+models/
+mlruns/
+*.joblib
+.env.local
 
-# Temp/test output
+# Temporary
+temp/
 tmp/
-test-results/
-playwright-report/
+*.tmp
+
+# Hugging Face
+.hf_cache/
+
+# Kaggle
+.kaggle/
+
+# Node (if present)
+node_modules/
+package-lock.json
+bun.lock
+
+# Convex (if not needed)
+.convex/

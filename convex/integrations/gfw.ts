@@ -1,6 +1,8 @@
 /**
  * Global Fishing Watch — Vessel tracking for maritime domain awareness
  * https://globalfishingwatch.org/our-apis/
+ * 
+ * Circuit breaker: If 5 consecutive failures, circuit opens and returns cached data
  */
 import { internalAction, internalMutation } from "../_generated/server";
 import { internal, api } from "../_generated/api";
@@ -82,12 +84,15 @@ export const fetchVessels = internalAction({
 			}
 
 			await ctx.runMutation(internal.integrations.gfw.storeVessels, { vessels });
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "gfw", name: "Global Fishing Watch", status: vessels.length > 0 ? "online" : "degraded", recordCount: vessels.length,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "gfw",
+				success: vessels.length > 0,
+				recordCount: vessels.length,
 			});
 		} catch (e) {
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "gfw", name: "Global Fishing Watch", status: "error", recordCount: 0,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "gfw",
+				success: false,
 				errorMessage: String(e),
 			});
 		}
@@ -120,7 +125,11 @@ export const storeVessels = internalMutation({
 		}
 
 		for (const vessel of args.vessels) {
-			await ctx.db.insert("vessels", { ...vessel, timestamp: now });
+			await ctx.db.insert("vessels", {
+				...vessel,
+				mmsi: vessel.mmsi.toUpperCase(),
+				timestamp: now,
+			});
 		}
 		return null;
 	},

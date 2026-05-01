@@ -1,6 +1,8 @@
 /**
  * N2YO — Satellite position tracking
  * https://www.n2yo.com/api/
+ * 
+ * Circuit breaker: If 5 consecutive failures, circuit opens and returns cached data
  */
 import { internalAction, internalMutation } from "../_generated/server";
 import { internal, api } from "../_generated/api";
@@ -72,13 +74,16 @@ export const fetchSatellites = internalAction({
 			}
 
 			await ctx.runMutation(internal.integrations.n2yo.storeSatellites, { positions });
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "n2yo", name: "N2YO Satellites", status: "online", recordCount: positions.length,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "n2yo",
+				success: positions.length > 0,
+				recordCount: positions.length,
 			});
 			await ctx.runMutation(internal.integrations.helpers.upsertStat, { key: "satellitePasses", value: positions.length });
 		} catch (e) {
-			await ctx.runMutation(internal.integrations.helpers.updateSourceStatus, {
-				sourceId: "n2yo", name: "N2YO Satellites", status: "error", recordCount: 0,
+			await ctx.runMutation(internal.integrations.helpers.updateCircuitBreaker, {
+				sourceId: "n2yo",
+				success: false,
 				errorMessage: String(e),
 			});
 		}

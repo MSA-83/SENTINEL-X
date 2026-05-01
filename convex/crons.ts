@@ -1,7 +1,13 @@
 import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api";
+import { internalMutation } from "./_generated/server";
 
 const crons = cronJobs();
+
+// ==================== CLEANUP JOBS ====================
+
+// Purge expired kgEdges (every Sunday at 3 AM)
+crons.interval("kg:cleanup", { hours: 168 }, internal.knowledgeGraph.purgeExpiredEdges);
 
 // ==================== HIGH FREQUENCY (2-15 min) ====================
 

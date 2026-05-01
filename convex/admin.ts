@@ -1,4 +1,4 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 
 // ==================== USER PROFILES ====================
@@ -145,6 +145,53 @@ export const getSystemHealth = query({
 			kgNodes: kgNodes.length,
 			uptime: now,
 		};
+	},
+});
+
+export const getFeedHealth = query({
+	args: {},
+	returns: v.array(v.object({
+		sourceId: v.string(),
+		name: v.string(),
+		status: v.string(),
+		circuitState: v.string(),
+		consecutiveFailures: v.number(),
+		lastFetch: v.number(),
+		lastFailureAt: v.number(),
+		recordCount: v.number(),
+		errorMessage: v.optional(v.string()),
+	})),
+	handler: async (ctx) => {
+		const sources = await ctx.db.query("dataSourceStatus").collect();
+		return sources.map((s) => ({
+			sourceId: s.sourceId,
+			name: s.name,
+			status: s.status,
+			circuitState: s.circuitState ?? "closed",
+			consecutiveFailures: s.consecutiveFailures ?? 0,
+			lastFetch: s.lastFetch,
+			lastFailureAt: s.lastFailureAt ?? 0,
+			recordCount: s.recordCount,
+			errorMessage: s.errorMessage,
+		}));
+	},
+});
+
+export const resetCircuitBreaker = internalMutation({
+	args: { sourceId: v.string() },
+	handler: async (ctx, args) => {
+		const existing = await ctx.db
+			.query("dataSourceStatus")
+			.withIndex("by_sourceId", (q) => q.eq("sourceId", args.sourceId))
+			.first();
+		if (existing) {
+			await ctx.db.patch(existing._id, {
+				circuitState: "closed",
+				consecutiveFailures: 0,
+				lastFailureAt: 0,
+				status: "healthy",
+			});
+		}
 	},
 });
 
