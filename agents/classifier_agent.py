@@ -3,23 +3,17 @@ Entity Classification Agent: Learns from feedback
 Integrates with training pipeline for continuous improvement
 """
 
-import os
-import json
-import asyncio
-import re
-from datetime import datetime
-from typing import Optional, Any
-from dataclasses import dataclass, field
 from langchain_groq import ChatGroq
 from langchain.memory import ConversationBufferMemory
 from pydantic import BaseModel, Field
+from typing import Optional
+import json
+from datetime import datetime
+import asyncio
 import numpy as np
+import re
 
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-
-
-@dataclass
 class ClassificationFeedback(BaseModel):
     """Feedback structure for agent learning"""
     prediction: str
@@ -27,18 +21,8 @@ class ClassificationFeedback(BaseModel):
     confidence: float
     entity_id: str
     features: dict
-    feedback_type: str = Field(default="")
+    feedback_type: str  # "correct" | "incorrect" | "ambiguous"
     timestamp: datetime = Field(default_factory=datetime.now)
-
-
-@dataclass
-class ClassificationMetrics:
-    """Track classification metrics"""
-    total: int = 0
-    correct: int = 0
-    incorrect: int = 0
-    accuracy: float = 0.0
-    feedback_count: int = 0
 
 
 class EntityClassifierAgent:
@@ -49,17 +33,14 @@ class EntityClassifierAgent:
     - Retrains on misclassifications
     """
     
-    def __init__(self, model_version: str = "v1", agent_name: str = "EntityClassifier"):
-        self.agent_name = agent_name
-        self.model_version = model_version
+    def __init__(self, model_version: str = "v1"):
         self.llm = ChatGroq(
             model="llama-3.1-70b-versatile",
             temperature=0.05,
-            max_tokens=2048,
-            groq_api_key=GROQ_API_KEY,
-            timeout=30
+            groq_api_key="free-groq-key"
         )
-        self.feedback_buffer: list[ClassificationFeedback] = []
+        self.model_version = model_version
+        self.feedback_buffer = []
         self.feature_importance = {
             "velocity": 0.25,
             "altitude": 0.15,
@@ -68,7 +49,12 @@ class EntityClassifierAgent:
             "time_based": 0.10,
             "seasonal": 0.10
         }
-        self.metrics = ClassificationMetrics()
+        self.classification_metrics = {
+            "total": 0,
+            "correct": 0,
+            "incorrect": 0,
+            "accuracy": 0.0
+        }
     
     async def extract_features(self, entity_data: dict) -> dict:
         """
@@ -79,37 +65,35 @@ class EntityClassifierAgent:
             "altitude": min(entity_data.get("altitude", 0) / 45000, 1.0),  # Normalize to max alt
             "lat_delta": abs(entity_data.get("lat_delta", 0)),  # Degrees changed
             "lon_delta": abs(entity_data.get("lon_delta", 0)),  # Degrees changed
-            "time_based": self._calc_time_anomaly(entity_data),
-            "signal_strength": entity_data.get("signal_strength", 0.5),
-            "course_stability": self._calc_course_stability(entity_data)
+            "time_based": self._calc_time_anomaly(entity_data),  # 0-1
+            "seasonal": self._calc_seasonal_anomaly(entity_data)
         }
         return features
     
     def _calc_time_anomaly(self, entity_data: dict) -> float:
-        """Anomaly score based on time-of-day"""
+        """Score based on time-of-day patterns"""
         hour = datetime.now().hour
         normal_hours = list(range(6, 20))  # 6am-8pm normal
-        
         if hour in normal_hours:
-            return 0.0
-        return min(1.0, abs(12 - hour) / 12)  # Peak at midnight/noon
+            return 0.0  # Normal operating hours
+        return min(1.0, (24 - hour) / 12)  # Higher anomaly at night
     
-    def _calc_course_stability(self, entity_data: dict) -> float:
-        """Measure stability of reported course"""
-        course_history = entity_data.get("course_history", [])
+    def _calc_seasonal_anomaly(self, entity_data: dict) -> float:
+        """Score based on seasonal patterns"""
+        month = datetime.now().month
+        entity_type = entity_data.get("domain", "unknown")
         
-        if len(course_history) < 2:
-            return 0.5  # Unknown
+        seasonal_patterns = {
+            "aircraft": {1: 0.8, 2: 0.7, 12: 0.9},  # Less activity winter
+            "ship": {7: 0.3, 8: 0.2}  # More activity summer
+        }
         
-        deltas = np.diff(course_history)
-        stability = 1.0 - min(1.0, np.std(deltas) / 180)  # Max variation 180°
-        
-        return stability
+        return seasonal_patterns.get(entity_type, {}).get(month, 0.1)
     
     async def classify(self, entity_data: dict) -> dict:
         """
         Classify entity with explanation
-        Returns: {"class": "normal"|"suspicious"|"anomaly", "confidence": 0-1, "reason": "..."}
+        Returns: {"class": "normal"|"anomaly", "confidence": 0-1, "reason": "..."}
         """
         features = await self.extract_features(entity_data)
         
@@ -122,39 +106,28 @@ class EntityClassifierAgent:
         # Use Groq for contextual reasoning
         reasoning_prompt = f"""Analyze this entity for anomalies:
 
+
 Entity: {json.dumps(entity_data)}
+Extracted Features: {json.dumps(features, default=str)}
+Anomaly Score: {anomaly_score:.2f}
 
-Extracted Features (normalized 0-1): {json.dumps(features)}
 
-Weighted Anomaly Score: {anomaly_score:.2f}
+Provide classification with reasoning:
+- If score < 0.3: NORMAL
+- If 0.3 ≤ score < 0.6: SUSPICIOUS
+- If score ≥ 0.6: ANOMALY
 
-Classification Rules:
-- If score < 0.30: NORMAL (typical behavior)
-- If 0.30 <= score < 0.55: SUSPICIOUS (needs monitoring)
-- If score >= 0.55: ANOMALY (likely threat)
 
-Provide classification with domain reasoning:
-Return valid JSON: {{"class": "normal"|"suspicious"|"anomaly", "confidence": 0.0-1.0, "reason": "..."}}"""
+Return JSON: {{"class": "normal"|"suspicious"|"anomaly", "confidence": 0.0-1.0, "reason": "..."}}"""
         
         try:
-            response = await asyncio.to_thread(self.llm.invoke, reasoning_prompt)
+            response = self.llm.invoke(reasoning_prompt)
+            result = json.loads(response.content)
             
-            # Extract JSON from response
-            json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group())
-            else:
-                # Fallback to score-based classification
-                result = {
-                    "class": "suspicious" if anomaly_score > 0.4 else "normal",
-                    "confidence": anomaly_score,
-                    "reason": "Model inference based on feature score"
-                }
-            
-            self.metrics.total += 1
+            self.classification_metrics["total"] += 1
             
             return {
-                "entity_id": entity_data.get("entity_id", "unknown"),
+                "entity_id": entity_data.get("entity_id"),
                 "class": result["class"],
                 "confidence": result["confidence"],
                 "reason": result["reason"],
@@ -162,10 +135,9 @@ Return valid JSON: {{"class": "normal"|"suspicious"|"anomaly", "confidence": 0.0
                 "features": features,
                 "model_version": self.model_version
             }
-            
         except Exception as e:
             return {
-                "entity_id": entity_data.get("entity_id", "unknown"),
+                "entity_id": entity_data.get("entity_id"),
                 "class": "unknown",
                 "confidence": 0.0,
                 "reason": f"Classification error: {str(e)}",
@@ -180,58 +152,50 @@ Return valid JSON: {{"class": "normal"|"suspicious"|"anomaly", "confidence": 0.0
         
         # Update metrics
         if feedback.feedback_type == "correct":
-            self.metrics.correct += 1
+            self.classification_metrics["correct"] += 1
         elif feedback.feedback_type == "incorrect":
-            self.metrics.incorrect += 1
+            self.classification_metrics["incorrect"] += 1
         
-        total = self.metrics.correct + self.metrics.incorrect
+        # Recalculate accuracy
+        total = (self.classification_metrics["correct"] + 
+                self.classification_metrics["incorrect"])
         if total > 0:
-            self.metrics.accuracy = self.metrics.correct / total
+            self.classification_metrics["accuracy"] = (
+                self.classification_metrics["correct"] / total
+            )
         
-        # Adjust feature importance based on incorrect classifications
+        # Adjust feature importance based on feedback
         if feedback.feedback_type == "incorrect":
-            features = feedback.features
-            update_prompt = f"""This classification was INCORRECT:
-
+            # Use Groq to suggest feature importance updates
+            prompt = f"""This classification was incorrect:
+            
 Predicted: {feedback.prediction}
 Actual: {feedback.actual}
-Features (normalized): {json.dumps(features)}
+Features: {json.dumps(feedback.features, default=str)}
+Current Importance: {json.dumps(self.feature_importance)}
 
-Current Feature Importance: {json.dumps(self.feature_importance)}
 
-Which features should be MORE important to catch this error?
-Return JSON: {{"feature_name": new_importance_0_to_1, ...}} (only features to increase)"""
+Suggest feature importance adjustments JSON:
+{{"feature_name": new_importance_0_to_1, ...}}"""
             
+            response = self.llm.invoke(prompt)
             try:
-                response = await asyncio.to_thread(self.llm.invoke, update_prompt)
-                json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
-                
-                if json_match:
-                    updates = json.loads(json_match.group())
-                    learning_rate = 0.1
-                    
-                    for feature, new_importance in updates.items():
-                        if feature in self.feature_importance:
-                            old = self.feature_importance[feature]
-                            self.feature_importance[feature] = (
-                                (1 - learning_rate) * old + learning_rate * new_importance
-                            )
-                    
-                    # Renormalize to sum=1
-                    total_imp = sum(self.feature_importance.values())
-                    self.feature_importance = {
-                        k: v/total_imp for k, v in self.feature_importance.items()
-                    }
-                    
-                    self.metrics.feedback_count += 1
-                    
-            except Exception as e:
-                print(f"Feature update error: {e}")
+                updates = json.loads(response.content)
+                # Apply updates (with smoothing to avoid overfit)
+                for feature, new_importance in updates.items():
+                    if feature in self.feature_importance:
+                        # Exponential moving average
+                        self.feature_importance[feature] = (
+                            0.9 * self.feature_importance[feature] +
+                            0.1 * new_importance
+                        )
+            except Exception:
+                pass
         
         return {
             "status": "feedback_processed",
             "buffer_size": len(self.feedback_buffer),
-            "accuracy": self.metrics.accuracy,
+            "accuracy": self.classification_metrics["accuracy"],
             "updated_importance": self.feature_importance
         }
     
@@ -241,34 +205,10 @@ Return JSON: {{"feature_name": new_importance_0_to_1, ...}} (only features to in
         Rules:
         - Every 100 feedback items
         - If accuracy drops below 85%
+        - Every 24 hours
         """
         if len(self.feedback_buffer) >= 100:
             return True
-        if self.metrics.accuracy < 0.85 and self.metrics.total >= 50:
+        if self.classification_metrics["accuracy"] < 0.85:
             return True
         return False
-    
-    def get_metrics(self) -> dict:
-        return {
-            "model_version": self.model_version,
-            "total_classified": self.metrics.total,
-            "correct": self.metrics.correct,
-            "incorrect": self.metrics.incorrect,
-            "accuracy": self.metrics.accuracy,
-            "feedback_count": self.metrics.feedback_count,
-            "feature_importance": self.feature_importance
-        }
-
-
-async def batch_classify(agent: EntityClassifierAgent, entities: list[dict]) -> list[dict]:
-    """Batch classify multiple entities"""
-    results = []
-    
-    for entity in entities:
-        result = await agent.classify(entity)
-        results.append(result)
-        
-        # Rate limit to avoid Groq throttling
-        await asyncio.sleep(0.5)
-    
-    return results
