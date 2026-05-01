@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    fastapi==0.115.0 \
+    uvicorn==0.30.0 \
+    supabase==2.8.0 \
+    groq==0.6.0 \
+    redis==5.0.0 \
+    sentence-transformers==3.0.0
+
+COPY backend/app.py /app/
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
