@@ -16,6 +16,40 @@ The Sentinel-X AI Training System is a **production-grade, $0/month** platform t
 ## **HIGH-LEVEL ARCHITECTURE**
 
 ```
+## Data Mesh & Cross-Region Coordination
+
+This section visualizes how data products in the Sentinel-X data mesh flow across regions and how cross-region coordination is achieved. The mesh provides domain-owned data products with versioning and lineage, while cross-region routing ensures timely and resilient data access for analytics and ML workloads.
+
+### Data Mesh Diagram (Mermaid)
+```mermaid
+graph TD;
+  OpenSky[OpenSky Data] --> Ingest[Ingest & Normalize]
+  Kaggle[Kaggle Data] --> Ingest
+  Synthetic[Synthetic Data] --> Ingest
+  Ingest --> Registry[Data Mesh Registry]
+  Registry --> DataProduct[Data Product: AircraftTelemetry]
+  DataProduct --> Consumers[Consumers: ML, Analytics, Ops]
+  subgraph Regions
+    US[US-East]
+    EU[EU-West]
+    APAC[APAC]
+  end
+  US --> CrossRegion[Cross-Region Router]
+  EU --> CrossRegion
+  APAC --> CrossRegion
+  CrossRegion --> DataProduct
+```
+
+### Data Mesh Schema (registry.json)
+- product_id: string
+- name: string
+- owner: string
+- version: string
+- sources: string[]
+- consumers: string[]
+- metadata: object
+
+The Data Mesh Registry stores products and their lineage, enabling discovery and governance across regions. See sentinel_x/data_mesh/abstraction_layer.py for implementation.
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    SENTINEL-X AI TRAINING SYSTEM                 │
 ├─────────────────────────────────────────────────────────────────────┤
