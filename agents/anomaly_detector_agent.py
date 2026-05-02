@@ -39,7 +39,7 @@ class AnomalyDetectorAgent:
         self.llm = llm or ChatGroq(
             model="llama-3.1-70b-versatile",
             temperature=0.05,
-            groq_api_key="free-groq-key"  # TODO: Move to env var
+            groq_api_key=os.environ.get("GROQ_API_KEY", "")  # SECURITY: Environment variable
         )
         
         # Historical data for statistical methods
