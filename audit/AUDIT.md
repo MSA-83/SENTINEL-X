@@ -23,7 +23,7 @@
 
 ### 2. Hardcoded API Keys (CWE-798) - ✅ PATCHED
 - **Files**: `agents/base_agent.py`, `agents/classifier_agent.py`
-- **Issue**: Hardcoded "your-free-groq-key" and "free-groq-key"
+- **Issue**: Previously hardcoded "your-free-groq-key" and "free-groq-key" (NOW FIXED)
 - **Fix**: Changed to `os.environ.get("GROQ_API_KEY", "")`
 
 ### 3. Prompt Injection (CWE-79) - ✅ PATCHED

@@ -27,8 +27,8 @@ CONFIG = {
     "opensky_endpoint": "https://opensky-network.org/api/states/all",
     "opensky_rate_limit": 10,  # req/min free tier
     "kaggle_dataset": "airbus/aircraft-taxonomy",
-    "groq_api_key": "YOUR_GROQ_KEY",  # Add your key
-    "neon_connection": "YOUR_NEON_POSTGRES_URL"
+    "groq_api_key": os.getenv("GROQ_API_KEY", ""),  # SECURITY: Environment variable
+    "neon_connection": os.getenv("NEON_POSTGRES_URL", "")
 }
 
 # ===========================================================================
