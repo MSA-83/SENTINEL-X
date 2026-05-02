@@ -1,216 +1,434 @@
-@import "tailwindcss";
-@import "tw-animate-css";
+/* SENTINEL-X Cyberpunk Design System */
+/* Phase 2: Dark-mode tactical UI */
 
-@custom-variant dark (&:is(.dark *));
-
-@font-face {
-	font-family: "JetBrains Mono";
-	font-style: normal;
-	font-weight: 400;
-	src: url("https://fonts.gstatic.com/s/jetbrainsmono/v18/tDbY2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKxjPVmUsaaDhw.woff2") format("woff2");
+:root {
+  /* ==================== CYBERPUNK COLORS ==================== */
+  
+  /* Background - Deep space black */
+  --bg-primary: #0a0e17;
+  --bg-secondary: #111827;
+  --bg-tertiary: #1e293b;
+  --bg-card: #0f172a;
+  --bg-elevated: #1e293b;
+  
+  /* Neon accent colors */
+  --neon-cyan: #00f5ff;
+  --neon-cyan-dim: #00f5ff40;
+  --neon-cyan-glow: #00f5ff80;
+  
+  --neon-red: #ff2d55;
+  --neon-red-dim: #ff2d5540;
+  
+  --neon-green: #39ff14;
+  --neon-green-dim: #39ff1440;
+  
+  --neon-orange: #ff9500;
+  --neon-orange-dim: #ff950040;
+  
+  --neon-yellow: #ffff00;
+  --neon-yellow-dim: #ffff0040;
+  
+  --neon-purple: #b366ff;
+  --neon-purple-dim: #b366ff40;
+  
+  /* Severity colors */
+  --severity-critical: #ff2d55;
+  --severity-high: #ff6600;
+  --severity-medium: #ff9500;
+  --severity-low: #39ff14;
+  --severity-info: #00f5ff;
+  
+  /* Text */
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-disabled: #475569;
+  
+  /* Borders */
+  --border-default: #1e293b;
+  --border-hover: #334155;
+  --border-active: #00f5ff;
+  
+  /* Status colors */
+  --status-active: #00f5ff;
+  --status-warning: #ff9500;
+  --status-success: #39ff14;
+  --status-error: #ff2d55;
+  
+  /* ==================== TYPOGRAPHY ==================== */
+  
+  /* Font families */
+  --font-display: 'Orbitron', 'SF Pro Display', system-ui, sans-serif;
+  --font-body: 'Rajdhani', 'SF Pro Text', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+  
+  /* Font sizes */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+  --text-4xl: 2.25rem;
+  
+  /* ==================== SPACING ==================== */
+  
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  
+  /* ==================== EFFECTS ==================== */
+  
+  /* Glow effects */
+  --glow-sm: 0 0 10px var(--neon-cyan-dim);
+  --glow-md: 0 0 20px var(--neon-cyan-dim);
+  --glow-lg: 0 0 30px var(--neon-cyan-glow);
+  --glow-critical: 0 0 20px var(--neon-red-dim);
+  
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+  --transition-slow: 350ms ease;
+  
+  /* Border radius */
+  --radius-sm: 0.125rem;
+  --radius-md: 0.25rem;
+  --radius-lg: 0.5rem;
+  --radius-full: 9999px;
 }
 
-@theme inline {
-	--color-background: oklch(0.12 0.01 240);
-	--color-foreground: oklch(0.93 0.01 240);
-	--color-card: oklch(0.15 0.015 240);
-	--color-card-foreground: oklch(0.93 0.01 240);
-	--color-popover: oklch(0.15 0.015 240);
-	--color-popover-foreground: oklch(0.93 0.01 240);
-	--color-primary: oklch(0.65 0.18 160);
-	--color-primary-foreground: oklch(0.12 0.01 240);
-	--color-secondary: oklch(0.22 0.02 240);
-	--color-secondary-foreground: oklch(0.85 0.01 240);
-	--color-muted: oklch(0.18 0.015 240);
-	--color-muted-foreground: oklch(0.6 0.02 240);
-	--color-accent: oklch(0.22 0.025 240);
-	--color-accent-foreground: oklch(0.85 0.01 240);
-	--color-destructive: oklch(0.6 0.2 25);
-	--color-destructive-foreground: oklch(0.98 0.005 0);
-	--color-border: oklch(0.25 0.02 240);
-	--color-input: oklch(0.22 0.02 240);
-	--color-ring: oklch(0.65 0.18 160);
-	--color-chart-1: oklch(0.65 0.18 160);
-	--color-chart-2: oklch(0.7 0.18 55);
-	--color-chart-3: oklch(0.65 0.12 230);
-	--color-chart-4: oklch(0.6 0.22 25);
-	--color-chart-5: oklch(0.75 0.15 80);
-	--color-sidebar-background: oklch(0.10 0.01 240);
-	--color-sidebar-foreground: oklch(0.85 0.01 240);
-	--color-sidebar-primary: oklch(0.65 0.18 160);
-	--color-sidebar-primary-foreground: oklch(0.12 0.01 240);
-	--color-sidebar-accent: oklch(0.18 0.02 240);
-	--color-sidebar-accent-foreground: oklch(0.85 0.01 240);
-	--color-sidebar-border: oklch(0.22 0.02 240);
-	--color-sidebar-ring: oklch(0.65 0.18 160);
-	--sidebar-width: 18rem;
-	--radius: 0.5rem;
+/* ==================== BASE STYLES ==================== */
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  line-height: 1.6;
 }
 
-@layer base {
-	* {
-		border-color: var(--color-border);
-	}
-	body {
-		background-color: var(--color-background);
-		color: var(--color-foreground);
-		font-family: "Inter", system-ui, -apple-system, sans-serif;
-		-webkit-font-smoothing: antialiased;
-		-moz-osx-font-smoothing: grayscale;
-	}
-}
-
-/* JetBrains Mono for .font-mono */
-.font-mono {
-	font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
-}
-
-/* Custom scrollbar */
+/* Scrollbar styling */
 ::-webkit-scrollbar {
-	width: 6px;
-	height: 6px;
+  width: 8px;
+  height: 8px;
 }
+
 ::-webkit-scrollbar-track {
-	background: oklch(0.12 0.01 240);
+  background: var(--bg-secondary);
 }
+
 ::-webkit-scrollbar-thumb {
-	background: oklch(0.25 0.02 240);
-	border-radius: 3px;
+  background: var(--border-hover);
+  border-radius: var(--radius-full);
 }
+
 ::-webkit-scrollbar-thumb:hover {
-	background: oklch(0.35 0.02 240);
+  background: var(--text-muted);
 }
 
-/* MapLibre tooltip override */
-.maplibregl-popup-content {
-	background: rgba(2, 6, 23, 0.95) !important;
-	border: 1px solid rgba(51, 65, 85, 0.5) !important;
-	border-radius: 6px !important;
-	padding: 8px 12px !important;
-	box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
-	color: #e2e8f0 !important;
-}
-.maplibregl-popup-tip {
-	border-top-color: rgba(2, 6, 23, 0.95) !important;
-}
-.maplibregl-popup-close-button {
-	color: #94a3b8 !important;
+/* ==================== UTILITY CLASSES ==================== */
+
+/* Glow text effects */
+.glow-cyan {
+  text-shadow: var(--glow-md);
 }
 
-/* Scanline animation */
-.scanline {
-	position: fixed;
-	top: 0;
-	left: 0;
-	width: 100%;
-	height: 100%;
-	pointer-events: none;
-	z-index: 9999;
-	background: repeating-linear-gradient(
-		0deg,
-		transparent,
-		transparent 2px,
-		rgba(0, 0, 0, 0.03) 2px,
-		rgba(0, 0, 0, 0.03) 4px
-	);
-	animation: scanline-move 8s linear infinite;
-	opacity: 0.3;
+.glow-red {
+  text-shadow: var(--glow-critical);
 }
 
-@keyframes scanline-move {
-	0% { transform: translateY(0); }
-	100% { transform: translateY(4px); }
+.glow-green {
+  text-shadow: 0 0 10px var(--neon-green-dim);
 }
 
-/* Pulse ring for critical markers */
-@keyframes pulse-ring {
-	0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
-	70% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
-	100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-}
-.pulse-critical {
-	animation: pulse-ring 2s ease-out infinite;
+/* Border glow */
+.border-glow {
+  box-shadow: var(--glow-sm);
 }
 
-/* MapLibre navigation overrides */
-.maplibregl-ctrl-group {
-	background: rgba(2, 6, 23, 0.8) !important;
-	border: 1px solid rgba(51, 65, 85, 0.5) !important;
-	border-radius: 6px !important;
-}
-.maplibregl-ctrl-group button {
-	background: transparent !important;
-	border-color: rgba(51, 65, 85, 0.3) !important;
-}
-.maplibregl-ctrl-group button + button {
-	border-top-color: rgba(51, 65, 85, 0.3) !important;
-}
-.maplibregl-ctrl-group button:hover {
-	background: rgba(30, 41, 59, 0.5) !important;
-}
-.maplibregl-ctrl-group button .maplibregl-ctrl-icon {
-	filter: invert(1) brightness(0.7);
+/* Neon separator */
+.neon-divider {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--border-default) 10%,
+    var(--neon-cyan) 50%,
+    var(--border-default) 90%,
+    transparent
+  );
 }
 
-/* Toast slide-in animation */
-@keyframes slide-in-down {
-	0% { transform: translateY(-20px); opacity: 0; }
-	100% { transform: translateY(0); opacity: 1; }
-}
-.animate-slide-in {
-	animation: slide-in-down 0.3s ease-out;
+/* ==================== SEVERITY BADGES ==================== */
+
+.severity-critical {
+  background: var(--severity-critical);
+  color: white;
+  box-shadow: var(--glow-critical);
 }
 
-/* Glow text for critical readouts */
-.text-glow-red {
-	text-shadow: 0 0 8px rgba(239, 68, 68, 0.6), 0 0 16px rgba(239, 68, 68, 0.3);
-}
-.text-glow-cyan {
-	text-shadow: 0 0 8px rgba(34, 211, 238, 0.6), 0 0 16px rgba(34, 211, 238, 0.3);
-}
-.text-glow-amber {
-	text-shadow: 0 0 8px rgba(245, 158, 11, 0.6), 0 0 16px rgba(245, 158, 11, 0.3);
+.severity-high {
+  background: var(--severity-high);
+  color: white;
 }
 
-/* MapLibre attribution minimal */
-.maplibregl-ctrl-attrib {
-	background: transparent !important;
-	font-size: 8px !important;
-	color: rgba(100,116,139,0.4) !important;
-}
-.maplibregl-ctrl-attrib a {
-	color: rgba(100,116,139,0.5) !important;
+.severity-medium {
+  background: var(--severity-medium);
+  color: var(--bg-primary);
 }
 
-/* Line clamp utility */
-.line-clamp-2 {
-	display: -webkit-box;
-	-webkit-line-clamp: 2;
-	-webkit-box-orient: vertical;
-	overflow: hidden;
+.severity-low {
+  background: var(--severity-low);
+  color: var(--bg-primary);
 }
 
-/* Animated radar pulse for critical markers */
-@keyframes radar-pulse {
-	0% { transform: scale(0.5); opacity: 0.8; }
-	100% { transform: scale(3); opacity: 0; }
-}
-.pulse-ring {
-	animation: radar-pulse 2s ease-out infinite;
-}
-.pulse-ring-fast {
-	animation: radar-pulse 1.2s ease-out infinite;
+.severity-info {
+  background: var(--severity-info);
+  color: var(--bg-primary);
 }
 
-/* Scrollbar thin for panels */
-.scrollbar-thin::-webkit-scrollbar { width: 4px; }
-.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
-.scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.3); border-radius: 2px; }
-.scrollbar-thin::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,0.5); }
+/* ==================== STATUS INDICATORS ==================== */
 
-/* Critical marker pulsing rings */
-@keyframes critical-pulse {
-	0% { transform: scale(0.3); opacity: 0.8; }
-	70% { opacity: 0.2; }
-	100% { transform: scale(1.5); opacity: 0; }
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.status-dot.active {
+  background: var(--status-active);
+  box-shadow: var(--glow-md);
+}
+
+.status-dot.warning {
+  background: var(--status-warning);
+}
+
+.status-dot.success {
+  background: var(--status-success);
+}
+
+.status-dot.error {
+  background: var(--status-error);
+  box-shadow: var(--glow-critical);
+}
+
+/* ==================== ANIMATIONS ==================== */
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes scan-line {
+  0% {
+    top: 0;
+  }
+  100% {
+    top: 100%;
+  }
+}
+
+@keyframes glitch {
+  0%, 100% {
+    transform: translate(0);
+  }
+  20% {
+    transform: translate(-2px, 2px);
+  }
+  40% {
+    transform: translate(2px, -2px);
+  }
+  60% {
+    transform: translate(-2px, -2px);
+  }
+  80% {
+    transform: translate(2px, 2px);
+  }
+}
+
+/* Scan line effect for maps */
+.scan-line::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--neon-cyan),
+    transparent
+  );
+  animation: scan-line 3s linear infinite;
+}
+
+/* ==================== CARD STYLES ==================== */
+
+.card-cyber {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  transition: all var(--transition-normal);
+}
+
+.card-cyber:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--glow-sm);
+}
+
+.card-cyber-elevated {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-active);
+  box-shadow: var(--glow-md);
+}
+
+/* ==================== BUTTON VARIANTS ==================== */
+
+.btn-cyber {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-cyber-primary {
+  background: var(--neon-cyan);
+  color: var(--bg-primary);
+  border: none;
+}
+
+.btn-cyber-primary:hover {
+  background: var(--neon-cyan);
+  box-shadow: var(--glow-md);
+}
+
+.btn-cyber-danger {
+  background: var(--neon-red);
+  color: white;
+  border: none;
+}
+
+.btn-cyber-danger:hover {
+  box-shadow: var(--glow-critical);
+}
+
+.btn-cyber-ghost {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+}
+
+.btn-cyber-ghost:hover {
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+}
+
+/* ==================== INPUT FIELDS ==================== */
+
+.input-cyber {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.input-cyber:focus {
+  border-color: var(--neon-cyan);
+  box-shadow: var(--glow-sm);
+  outline: none;
+}
+
+.input-cyber::placeholder {
+  color: var(--text-muted);
+}
+
+/* ==================== SIDEBAR ==================== */
+
+.sidebar {
+  width: 280px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-default);
+}
+
+.sidebar-item {
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-secondary);
+  border-left: 3px solid transparent;
+  transition: all var(--transition-fast);
+}
+
+.sidebar-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.sidebar-item.active {
+  background: var(--bg-tertiary);
+  color: var(--neon-cyan);
+  border-left-color: var(--neon-cyan);
+}
+
+/* ==================== MAP CONTAINER ==================== */
+
+.map-container {
+  background: var(--bg-primary);
+  position: relative;
+  overflow: hidden;
+}
+
+.map-overlay {
+  position: absolute;
+  top: var(--space-4);
+  left: var(--space-4);
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  backdrop-filter: blur(8px);
+}
+
+.map-marker {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid white;
+  box-shadow: 0 0 10px currentColor;
+}
+
+.map-marker.critical {
+  background: var(--severity-critical);
+  color: var(--severity-critical);
+}
+
+.map-marker.high {
+  background: var(--severity-high);
+  color: var(--severity-high);
+}
+
+.map-marker.medium {
+  background: var(--severity-medium);
+  color: var(--severity-medium);
+}
+
+.map-marker.low {
+  background: var(--severity-low);
+  color: var(--severity-low);
 }
