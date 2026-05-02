@@ -3,8 +3,8 @@ End-to-End DEMO: Ingest data from free sources, register data products in the da
 train a lightweight model on free-tier tooling, and prepare artifacts for hosting.
 
 This demo is intentionally lightweight and self-contained to illustrate the end-to-end flow
-// Trigger patch to re-run PR automation
 using only 100% free tooling in Sentinel-X.
+Note: Minor patch to retrigger PR automation in CI.
 """
 
 import json
