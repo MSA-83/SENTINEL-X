@@ -1,0 +1,84 @@
+name: Deploy SENTINEL-X
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Playwright test
+        run: npx playwright test --reporter=line
+        env:
+          BASE_URL: http://localhost:5173
+
+  deploy-vercel:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: env.VERCEL_TOKEN
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Pull Vercel Environment
+        run: vercel pull --yes --environment=Production --token=${{ env.VERCEL_TOKEN }}
+
+      - name: Build Project
+        run: vercel build --prod --token=${{ env.VERCEL_TOKEN }}
+
+      - name: Deploy to Vercel
+        run: vercel deploy --prebuilt --prod --token=${{ env.VERCEL_TOKEN }}
+
+  deploy-netlify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: env.NETLIFY_AUTH_TOKEN
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Deploy
+        uses: nwtgck/actions-netlify@v2
+        with:
+          publish-dir: ./dist
+          production-branch: main
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          deploy-token: ${{ env.NETLIFY_AUTH_TOKEN }}
+          site-id: ${{ env.NETLIFY_SITE_ID }}
