@@ -28,6 +28,8 @@ class ClassificationFeedback(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
+import os
+
 class EntityClassifierAgent:
     """
     Self-improving entity classifier that learns from corrections.
@@ -46,7 +48,7 @@ class EntityClassifierAgent:
         self.llm = ChatGroq(
             model="llama-3.1-70b-versatile",  # Free Groq model
             temperature=0.05,  # Low temperature for consistent classification
-            groq_api_key="free-groq-key"  # TODO: Move to environment variable
+            groq_api_key=os.environ.get("GROQ_API_KEY", "")  # SECURITY: Environment variable
         )
         self.model_version = model_version
         self.feedback_buffer: list[ClassificationFeedback] = []
@@ -163,10 +165,18 @@ class EntityClassifierAgent:
             for key in features
         )
         
+        # SECURITY: Sanitize entity_data before LLM prompt to prevent injection
+        sanitized_data = re.sub(
+            r"(ignore previous|disregard your|<script|{{|}}|javascript:|onerror=|onclick=)",
+            "[REDACTED]",
+            json.dumps(entity_data, default=str),
+            flags=re.IGNORECASE
+        )
+        
         # Use Groq for contextual reasoning
         reasoning_prompt = f"""Analyze this entity for anomalies:
 
-Entity: {json.dumps(entity_data, default=str)}
+Entity: {sanitized_data}
 Extracted Features: {json.dumps(features, default=str)}
 Anomaly Score: {anomaly_score:.2f}
 

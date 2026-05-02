@@ -19,12 +19,13 @@ from typing import Dict, List, Any, Optional
 
 
 # Initialize FREE Groq (Llama 3.1 70B)
-# TODO: Move API key to environment variable
+# API key MUST come from environment variable (GROQ_API_KEY)
+import os
 DEFAULT_LLM = ChatGroq(
     model="llama-3.1-70b-versatile",
     temperature=0.1,
     max_tokens=2048,
-    groq_api_key="your-free-groq-key"  # nosec B105 - runtime configurable
+    groq_api_key=os.environ.get("GROQ_API_KEY", "")
 )
 
 
@@ -85,6 +86,13 @@ class SentinelAgent:
             Returns:
                 Entity metadata + embedding
             """
+            # SECURITY: Validate entity_id to prevent SSRF
+            import re
+            # Block RFC-1918 private ranges and special chars
+            if not entity_id or len(entity_id) > 64:
+                return {"error": "Invalid entity_id"}
+            if re.search(r"[\n\r\t\x00-\x1f]|^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|localhost)", entity_id, re.I):
+                return {"error": "Invalid entity_id"}
             # Mock - replace with real DB query
             return {
                 "entity_id": entity_id,
@@ -119,9 +127,21 @@ class SentinelAgent:
             Returns:
                 Classification + confidence + reason
             """
+            # SECURITY: Sanitize entity_data before LLM prompt
+            import re
+            import json
+            
+            # Remove prompt injection patterns
+            sanitized = re.sub(
+                r"(ignore previous|disregard your|<script|{{|}}|javascript:|onerror=|onclick=)",
+                "[REDACTED]",
+                json.dumps(entity_data),
+                flags=re.IGNORECASE
+            )
+            
             prompt = f"""Analyze this entity for anomalies:
             
-Data: {json.dumps(entity_data)}
+Data: {sanitized}
 
 Classify as:
 - NORMAL: Regular behavior
