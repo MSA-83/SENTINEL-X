@@ -75,3 +75,5 @@ async def run_demo():
 
 if __name__ == "__main__":
     asyncio.run(run_demo())
+
+// CI trigger patch for auto PR on End-to-End Demo
