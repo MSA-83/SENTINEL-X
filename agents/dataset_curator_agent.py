@@ -16,6 +16,7 @@ import hashlib
 from typing import Dict, List, Any, Optional
 import asyncio
 import numpy as np
+import os
 
 
 class DatasetCuratorAgent:
@@ -36,7 +37,7 @@ class DatasetCuratorAgent:
         self.llm = ChatGroq(
             model="llama-3.1-70b-versatile",
             temperature=0.05,
-            groq_api_key="free-groq-key"  # TODO: Move to environment variable
+            groq_api_key=os.environ.get("GROQ_API_KEY", "")  # SECURITY: Environment variable
         )
         self.dataset_name = dataset_name
         self.version = "v1.0"
@@ -100,6 +101,15 @@ class DatasetCuratorAgent:
             Dictionary with labeling results and metadata
         """
         features = observation.get("features", {})
+        
+        # SECURITY: Sanitize features before LLM prompt
+        sanitized_features = re.sub(
+            r"(ignore previous|disregard your|<script|{{|}}|javascript:|onerror=|onclick=)",
+            "[REDACTED]",
+            json.dumps(features, default=str),
+            flags=re.IGNORECASE
+        )
+        
         prompt = f"""Classify this aircraft observation as normal, suspicious, or anomaly:
 
 Observation Data:

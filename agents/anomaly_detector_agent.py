@@ -219,10 +219,18 @@ class AnomalyDetectorAgent:
         Returns:
             Dict with method, anomaly status, severity, and reason
         """
+        # SECURITY: Sanitize entity_data before LLM prompt
+        sanitized_data = re.sub(
+            r"(ignore previous|disregard your|<script|{{|}}|javascript:|onerror=|onclick=)",
+            "[REDACTED]",
+            json.dumps(entity_data, default=str),
+            flags=re.IGNORECASE
+        )
+        
         prompt = f"""Analyze this entity for contextual anomalies:
 
 Entity ID: {entity_id}
-Data: {json.dumps(entity_data, default=str)}
+Data: {sanitized_data}
 
 Consider:
 1. Is this entity in an unusual location for its type?
