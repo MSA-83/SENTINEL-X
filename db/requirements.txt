@@ -10,9 +10,9 @@ sqlalchemy[asyncio]==2.0.25
 alembic==1.13.1
 
 # Authentication
-python-jose[cryptography]==3.3.0
+python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
+python-multipart==0.0.26
 
 # AI / ML
 groq==0.4.2
@@ -22,13 +22,13 @@ aiofiles==23.2.1
 python-magic==0.4.27
 
 # HTTP client
-aiohttp==3.9.3
+aiohttp==3.13.4
 
 # Caching
 redis==5.0.1
 
 # Utilities
-python-dotenv==1.0.0
+python-dotenv==1.2.2
 pydantic==2.5.3
 pydantic-settings==2.1.0
 phonenumbers==8.13.27
