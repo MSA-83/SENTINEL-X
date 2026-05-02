@@ -1,0 +1,47 @@
+name: Auto PR - End-to-End Demo
+
+on:
+  push:
+    branches:
+      - feature/end-to-end-demo
+
+jobs:
+  pr-from-feature:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: main
+          head: feature/end-to-end-demo
+          title: "End-to-End Demo: Free-Tier Data Ingest → Data Mesh Registry → Synthetic Training Artifacts"
+          body: |
+            ## Summary
+            - This PR introduces a complete end-to-end demo for Sentinel-X that uses 100% free-tier tooling to demonstrate data ingestion, data mesh data products, synthetic training data, and a lightweight ML artifact workflow.
+            - The PR includes new data extractors, data mesh registry improvements, cross-region orchestration scaffolds, ML skeletons, and a demo script.
+
+            ## Included changes
+            - Demos: demos/demo_end_to_end.py
+            - Data sources: sentinel_x/data_sources/github_extractor.py, sentinel_x/datasets/public_data_sources.py
+            - Data mesh: sentinel_x/data_mesh/abstraction_layer.py
+            - Cross-region: distributed_hierarchy.py
+            - ML skeletons: training/multi_modal_anomaly_detector.py
+            - Canary/Chaos scaffolds: deployment/canary_pipeline.py, deployment/chaos_engineering.py
+            - ATK-10 privilege escalation: sentinel_x/security/atk_10_privilege_escalation.py
+            - GDPR/IL6: sentinel_x/compliance/gdpr_eraser.py, sentinel_x/security/il6_audit.py
+            - Tests: tests/test_*.py
+            - CI: .github/workflows/ci.yml
+            - Architecture: ARCHITECTURE.md
+
+            ## Testing & Review
+            - Local: run tests, run demo_end_to_end.py
+            - CI: verify PR checks, tests
+
+            ## Security
+            - Token safety: PR creation uses GITHUB_TOKEN, which is scoped to the repo. Do not reuse pasted tokens here.
+
+          draft: false
