@@ -37,15 +37,15 @@ Browser (public/static/sentinel.js)
 
 ### Key design decisions
 
-| Decision | Rationale |
-|---|---|
-| **Edge BFF** (Cloudflare Pages Workers) | All keyed API calls are server-side. The browser never sees secrets. |
-| **Canonical event schema** | Every entity has a common shape regardless of source. |
-| **Provenance tracking** | `direct-api`, `geocoded-inferred`, `curated-reference`, `no-location` are always explicit. |
-| **Graceful degradation** | Each upstream failure returns a structured `_upstream_error` object; layers never hang. |
-| **Free-first** | Critical layers work without any API key; keys only unlock additional depth. |
-| **adsb.one as ADS-B source** | OpenSky Network is blocked from Cloudflare edge. adsb.one provides 12,000+ live aircraft globally, no key required. Server-side transformation produces OpenSky-compatible `states[]` format. |
-| **Curated GNSS model** | No free real-time GNSS interference API exists. Data is curated from GPSJam.org, Eurocontrol, C4ADS, EASA, enriched with live GDELT news. |
+| Decision                                | Rationale                                                                                                                                                                                     |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Edge BFF** (Cloudflare Pages Workers) | All keyed API calls are server-side. The browser never sees secrets.                                                                                                                          |
+| **Canonical event schema**              | Every entity has a common shape regardless of source.                                                                                                                                         |
+| **Provenance tracking**                 | `direct-api`, `geocoded-inferred`, `curated-reference`, `no-location` are always explicit.                                                                                                    |
+| **Graceful degradation**                | Each upstream failure returns a structured `_upstream_error` object; layers never hang.                                                                                                       |
+| **Free-first**                          | Critical layers work without any API key; keys only unlock additional depth.                                                                                                                  |
+| **adsb.one as ADS-B source**            | OpenSky Network is blocked from Cloudflare edge. adsb.one provides 12,000+ live aircraft globally, no key required. Server-side transformation produces OpenSky-compatible `states[]` format. |
+| **Curated GNSS model**                  | No free real-time GNSS interference API exists. Data is curated from GPSJam.org, Eurocontrol, C4ADS, EASA, enriched with live GDELT news.                                                     |
 
 ---
 
@@ -130,7 +130,26 @@ curl http://localhost:3000/api/health    # preview server
 Expected response:
 
 ```json
-{"status":"operational","version":"6.2.0","codename":"SENTINEL OS","domains":["aviation","maritime","orbital","seismic","wildfire","weather","conflict","disaster","cyber","nuclear","gnss","social","imagery"]}
+{
+  "status": "operational",
+  "version": "6.2.0",
+  "codename": "SENTINEL OS",
+  "domains": [
+    "aviation",
+    "maritime",
+    "orbital",
+    "seismic",
+    "wildfire",
+    "weather",
+    "conflict",
+    "disaster",
+    "cyber",
+    "nuclear",
+    "gnss",
+    "social",
+    "imagery"
+  ]
+}
 ```
 
 Check key configuration:
@@ -214,27 +233,27 @@ The root `GET /` returns the HTML shell with the Leaflet map. If you see a blank
 
 ## Environment Variables
 
-| Variable | Required | Layer | Registration |
-|---|---|---|---|
-| `NASA_FIRMS_KEY` | Optional | Wildfires | https://firms.modaps.eosdis.nasa.gov/api/ |
-| `OWM_KEY` | Optional | Weather cities | https://openweathermap.org/appid |
-| `N2YO_KEY` | Optional | Satellites | https://www.n2yo.com/api/ |
-| `GFW_TOKEN` | Optional | Maritime AIS | https://globalfishingwatch.org/our-apis/ |
-| `AVWX_KEY` | Optional | METAR | https://avwx.rest/ |
-| `RAPIDAPI_KEY` | Optional | Military air | https://rapidapi.com/adsbexchange |
-| `SHODAN_KEY` | Optional | Internet exposure | https://account.shodan.io/ |
-| `NEWS_API_KEY` | Optional | News intel | https://newsapi.org/register |
-| `AISSTREAM_KEY` | Optional | AIS WebSocket | https://aisstream.io/ |
-| `OTX_KEY` | Optional | Threat intel | https://otx.alienvault.com/ |
-| `ABUSECH_KEY` | Optional | URLhaus/ThreatFox auth | https://abuse.ch/auth/ |
-| `ACLED_KEY` | Optional | Armed conflict | https://developer.acleddata.com/ |
-| `ACLED_EMAIL` | With ACLED_KEY | Armed conflict | Same |
-| `SPACETRACK_USER` | Optional | Space-Track TLE | https://www.space-track.org/ |
-| `SPACETRACK_PASS` | With SPACETRACK_USER | Space-Track | Same |
-| `CESIUM_TOKEN` | Optional | Cesium Ion 3D | https://ion.cesium.com/ |
-| `COPERNICUS_CLIENT_ID` | Optional | Copernicus WMTS | https://dataspace.copernicus.eu/ |
-| `COPERNICUS_CLIENT_SECRET` | With COPERNICUS_CLIENT_ID | Copernicus | Same |
-| `PLANET_API_KEY` | Optional | Planet imagery | https://www.planet.com/ (no active integration yet) |
+| Variable                   | Required                  | Layer                  | Registration                                        |
+| -------------------------- | ------------------------- | ---------------------- | --------------------------------------------------- |
+| `NASA_FIRMS_KEY`           | Optional                  | Wildfires              | https://firms.modaps.eosdis.nasa.gov/api/           |
+| `OWM_KEY`                  | Optional                  | Weather cities         | https://openweathermap.org/appid                    |
+| `N2YO_KEY`                 | Optional                  | Satellites             | https://www.n2yo.com/api/                           |
+| `GFW_TOKEN`                | Optional                  | Maritime AIS           | https://globalfishingwatch.org/our-apis/            |
+| `AVWX_KEY`                 | Optional                  | METAR                  | https://avwx.rest/                                  |
+| `RAPIDAPI_KEY`             | Optional                  | Military air           | https://rapidapi.com/adsbexchange                   |
+| `SHODAN_KEY`               | Optional                  | Internet exposure      | https://account.shodan.io/                          |
+| `NEWS_API_KEY`             | Optional                  | News intel             | https://newsapi.org/register                        |
+| `AISSTREAM_KEY`            | Optional                  | AIS WebSocket          | https://aisstream.io/                               |
+| `OTX_KEY`                  | Optional                  | Threat intel           | https://otx.alienvault.com/                         |
+| `ABUSECH_KEY`              | Optional                  | URLhaus/ThreatFox auth | https://abuse.ch/auth/                              |
+| `ACLED_KEY`                | Optional                  | Armed conflict         | https://developer.acleddata.com/                    |
+| `ACLED_EMAIL`              | With ACLED_KEY            | Armed conflict         | Same                                                |
+| `SPACETRACK_USER`          | Optional                  | Space-Track TLE        | https://www.space-track.org/                        |
+| `SPACETRACK_PASS`          | With SPACETRACK_USER      | Space-Track            | Same                                                |
+| `CESIUM_TOKEN`             | Optional                  | Cesium Ion 3D          | https://ion.cesium.com/                             |
+| `COPERNICUS_CLIENT_ID`     | Optional                  | Copernicus WMTS        | https://dataspace.copernicus.eu/                    |
+| `COPERNICUS_CLIENT_SECRET` | With COPERNICUS_CLIENT_ID | Copernicus             | Same                                                |
+| `PLANET_API_KEY`           | Optional                  | Planet imagery         | https://www.planet.com/ (no active integration yet) |
 
 All keys are **optional**. Missing keys cause the affected layer to return a structured `_upstream_error` with a message explaining where to register.
 
@@ -270,35 +289,42 @@ Location data inferred from article text is marked `provenance: "geocoded-inferr
 
 Every entity returned by any `/api/*` domain endpoint conforms to this shape:
 
-| Field | Type | Description |
-|---|---|---|
-| `id` | `string` | Unique identifier prefixed by source (e.g. `kev_CVE-2024-1234`, `air_0`) |
-| `entity_type` | `string` | `aircraft`, `satellite`, `seismic`, `wildfire`, `cyber_vulnerability`, `cyber_ioc`, `cyber_malware_url`, `cyber_threat_intel`, `gnss_jamming`, `gnss_spoofing`, `gnss_news`, `conflict_intel`, `nuclear_intel`, `social_post`, `fishing_vessel`, `dark_vessel`, `ship`, `weather` |
-| `source` | `string` | Data provider name (e.g. `CISA KEV`, `URLhaus (abuse.ch)`) |
-| `source_url` | `string` | Canonical upstream URL |
-| `title` | `string` | Display name |
-| `description` | `string` | Detail text |
-| `lat` | `number|null` | WGS84 latitude. `null` for entities without coordinates (cyber IOCs, satellites pre-propagation). |
-| `lon` | `number|null` | WGS84 longitude |
-| `altitude` | `number|null` | Feet for aircraft; km for satellites |
-| `velocity` | `number|null` | Knots for aircraft; km/s for orbital |
-| `heading` | `number|null` | Degrees true |
-| `timestamp` | ISO string | Event time from upstream source |
-| `observed_at` | ISO string | When SENTINEL fetched the record |
-| `confidence` | `0-100` | 95 = direct API/GPS; 30-35 = text-inferred location; 0 = unknown |
-| `severity` | `string` | `critical` / `high` / `medium` / `low` / `info` |
-| `risk_score` | `0-100` | Computed threat score |
-| `region` | `string` | Geographic region label |
-| `tags` | `string[]` | Categorization tags |
-| `correlations` | `string[]` | Related entity IDs |
-| `metadata` | `object` | Source-specific extra fields |
-| `raw_payload_hash` | `string` | FNV-1a 32-bit hash for deduplication |
-| `provenance` | `string` | `direct-api` / `geocoded-inferred` / `curated-reference` / `no-location` |
+| Field              | Type       | Description                                                                                                                                                                                                                                                                       |
+| ------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `id`               | `string`   | Unique identifier prefixed by source (e.g. `kev_CVE-2024-1234`, `air_0`)                                                                                                                                                                                                          |
+| `entity_type`      | `string`   | `aircraft`, `satellite`, `seismic`, `wildfire`, `cyber_vulnerability`, `cyber_ioc`, `cyber_malware_url`, `cyber_threat_intel`, `gnss_jamming`, `gnss_spoofing`, `gnss_news`, `conflict_intel`, `nuclear_intel`, `social_post`, `fishing_vessel`, `dark_vessel`, `ship`, `weather` |
+| `source`           | `string`   | Data provider name (e.g. `CISA KEV`, `URLhaus (abuse.ch)`)                                                                                                                                                                                                                        |
+| `source_url`       | `string`   | Canonical upstream URL                                                                                                                                                                                                                                                            |
+| `title`            | `string`   | Display name                                                                                                                                                                                                                                                                      |
+| `description`      | `string`   | Detail text                                                                                                                                                                                                                                                                       |
+| `lat`              | `number    | null`                                                                                                                                                                                                                                                                             | WGS84 latitude. `null` for entities without coordinates (cyber IOCs, satellites pre-propagation). |
+| `lon`              | `number    | null`                                                                                                                                                                                                                                                                             | WGS84 longitude                                                                                   |
+| `altitude`         | `number    | null`                                                                                                                                                                                                                                                                             | Feet for aircraft; km for satellites                                                              |
+| `velocity`         | `number    | null`                                                                                                                                                                                                                                                                             | Knots for aircraft; km/s for orbital                                                              |
+| `heading`          | `number    | null`                                                                                                                                                                                                                                                                             | Degrees true                                                                                      |
+| `timestamp`        | ISO string | Event time from upstream source                                                                                                                                                                                                                                                   |
+| `observed_at`      | ISO string | When SENTINEL fetched the record                                                                                                                                                                                                                                                  |
+| `confidence`       | `0-100`    | 95 = direct API/GPS; 30-35 = text-inferred location; 0 = unknown                                                                                                                                                                                                                  |
+| `severity`         | `string`   | `critical` / `high` / `medium` / `low` / `info`                                                                                                                                                                                                                                   |
+| `risk_score`       | `0-100`    | Computed threat score                                                                                                                                                                                                                                                             |
+| `region`           | `string`   | Geographic region label                                                                                                                                                                                                                                                           |
+| `tags`             | `string[]` | Categorization tags                                                                                                                                                                                                                                                               |
+| `correlations`     | `string[]` | Related entity IDs                                                                                                                                                                                                                                                                |
+| `metadata`         | `object`   | Source-specific extra fields                                                                                                                                                                                                                                                      |
+| `raw_payload_hash` | `string`   | FNV-1a 32-bit hash for deduplication                                                                                                                                                                                                                                              |
+| `provenance`       | `string`   | `direct-api` / `geocoded-inferred` / `curated-reference` / `no-location`                                                                                                                                                                                                          |
 
 Upstream failures are returned as:
 
 ```json
-{ "_upstream_error": true, "upstream": "source-name", "status": 0, "message": "Human-readable reason. Configure KEY at https://...", "events": [], "timestamp": "..." }
+{
+  "_upstream_error": true,
+  "upstream": "source-name",
+  "status": 0,
+  "message": "Human-readable reason. Configure KEY at https://...",
+  "events": [],
+  "timestamp": "..."
+}
 ```
 
 ---
@@ -414,51 +440,51 @@ Upstream failures are returned as:
 
 ### Health and Status
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/health` | Platform status, version, domain list |
-| `GET` | `/api/status` | Key configuration booleans, target count, zone counts |
-| `GET` | `/api/sources/health` | Live probe (latency + HTTP status) of all free sources; key-configured status for paid sources |
+| Method | Path                  | Description                                                                                    |
+| ------ | --------------------- | ---------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/health`         | Platform status, version, domain list                                                          |
+| `GET`  | `/api/status`         | Key configuration booleans, target count, zone counts                                          |
+| `GET`  | `/api/sources/health` | Live probe (latency + HTTP status) of all free sources; key-configured status for paid sources |
 
 ### Secure Proxy
 
-| Method | Path | Description |
-|---|---|---|
+| Method | Path         | Description                                                                                                                                                                                                           |
+| ------ | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST` | `/api/proxy` | Body: `{ "target": "NAME", "params": {} }`. Valid targets: `opensky`, `military`, `gfw_fishing`, `gfw_gap`, `firms`, `n2yo`, `gdacs`, `reliefweb`, `gdelt_conflict`, `gdelt_maritime`, `gdelt_nuclear`, `gdelt_cyber` |
 
 ### Domain Endpoints
 
-| Method | Path | Key | Description |
-|---|---|---|---|
-| `GET` | `/api/air/traffic` | None | Live aircraft as CanonicalEvent[] |
-| `GET` | `/api/sea/vessels` | `GFW_TOKEN` optional | GFW fishing/dark vessels or GDELT fallback |
-| `GET` | `/api/space/satellites` | None | CelesTrak space stations JSON |
-| `GET` | `/api/space/spacetrack` | `SPACETRACK_USER` + `SPACETRACK_PASS` | Space-Track.org TLE catalog |
-| `GET` | `/api/weather/global` | `OWM_KEY` | Current weather for 20 cities |
-| `GET` | `/api/weather/storm-events` | None | GDACS storm events |
-| `GET` | `/api/avwx/global` | `AVWX_KEY` | METAR for 15 airports |
-| `GET` | `/api/ais/config` | None | AIS availability boolean |
-| `POST` | `/api/shodan/search` | `SHODAN_KEY` | Internet exposure search |
-| `GET` | `/api/reliefweb/disasters` | None | UN OCHA disaster data |
-| `GET` | `/api/acled/events` | `ACLED_KEY` + `ACLED_EMAIL` | ACLED armed conflict events |
-| `POST` | `/api/intel/gdelt` | None | GDELT geocoded articles (category: conflict/maritime/nuclear/cyber) |
-| `POST` | `/api/intel/news` | `NEWS_API_KEY` | NewsAPI geocoded articles |
-| `POST` | `/api/conflict/events` | None | GDELT conflict/nuclear articles |
-| `GET` | `/api/conflict/zones` | None | Curated fusion threat zones |
-| `GET` | `/api/cyber/cisa-kev` | None | CISA KEV catalog |
-| `GET` | `/api/cyber/otx` | `OTX_KEY` optional | AlienVault OTX pulses |
-| `GET` | `/api/cyber/urlhaus` | None | URLhaus malware URLs |
-| `GET` | `/api/cyber/threatfox` | None | ThreatFox IOC feed (3-day) |
-| `GET` | `/api/cyber/urlhaus-auth` | `ABUSECH_KEY` optional | URLhaus 100-record limit |
-| `GET` | `/api/cyber/threatfox-auth` | `ABUSECH_KEY` optional | ThreatFox 7-day IOC window |
-| `GET` | `/api/gnss/anomalies` | None | 13 curated GNSS zones + GDELT news |
-| `GET` | `/api/gps/anomalies` | None | Alias to /api/gnss/anomalies |
-| `GET` | `/api/gps/zones` | None | Curated GNSS zones only |
-| `GET` | `/api/social/reddit` | None | Reddit OSINT posts |
-| `GET` | `/api/fusion/zones` | None | All threat zones |
-| `GET` | `/api/fusion/viewport` | None | Viewport-filtered zones (?latMin&latMax&lonMin&lonMax) |
-| `GET` | `/api/fusion/global` | None | Platform overview and domain coverage |
-| `GET` | `/api/imagery/copernicus-token` | `COPERNICUS_CLIENT_ID` + `COPERNICUS_CLIENT_SECRET` | Short-lived Copernicus OAuth2 token |
+| Method | Path                            | Key                                                 | Description                                                         |
+| ------ | ------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------- |
+| `GET`  | `/api/air/traffic`              | None                                                | Live aircraft as CanonicalEvent[]                                   |
+| `GET`  | `/api/sea/vessels`              | `GFW_TOKEN` optional                                | GFW fishing/dark vessels or GDELT fallback                          |
+| `GET`  | `/api/space/satellites`         | None                                                | CelesTrak space stations JSON                                       |
+| `GET`  | `/api/space/spacetrack`         | `SPACETRACK_USER` + `SPACETRACK_PASS`               | Space-Track.org TLE catalog                                         |
+| `GET`  | `/api/weather/global`           | `OWM_KEY`                                           | Current weather for 20 cities                                       |
+| `GET`  | `/api/weather/storm-events`     | None                                                | GDACS storm events                                                  |
+| `GET`  | `/api/avwx/global`              | `AVWX_KEY`                                          | METAR for 15 airports                                               |
+| `GET`  | `/api/ais/config`               | None                                                | AIS availability boolean                                            |
+| `POST` | `/api/shodan/search`            | `SHODAN_KEY`                                        | Internet exposure search                                            |
+| `GET`  | `/api/reliefweb/disasters`      | None                                                | UN OCHA disaster data                                               |
+| `GET`  | `/api/acled/events`             | `ACLED_KEY` + `ACLED_EMAIL`                         | ACLED armed conflict events                                         |
+| `POST` | `/api/intel/gdelt`              | None                                                | GDELT geocoded articles (category: conflict/maritime/nuclear/cyber) |
+| `POST` | `/api/intel/news`               | `NEWS_API_KEY`                                      | NewsAPI geocoded articles                                           |
+| `POST` | `/api/conflict/events`          | None                                                | GDELT conflict/nuclear articles                                     |
+| `GET`  | `/api/conflict/zones`           | None                                                | Curated fusion threat zones                                         |
+| `GET`  | `/api/cyber/cisa-kev`           | None                                                | CISA KEV catalog                                                    |
+| `GET`  | `/api/cyber/otx`                | `OTX_KEY` optional                                  | AlienVault OTX pulses                                               |
+| `GET`  | `/api/cyber/urlhaus`            | None                                                | URLhaus malware URLs                                                |
+| `GET`  | `/api/cyber/threatfox`          | None                                                | ThreatFox IOC feed (3-day)                                          |
+| `GET`  | `/api/cyber/urlhaus-auth`       | `ABUSECH_KEY` optional                              | URLhaus 100-record limit                                            |
+| `GET`  | `/api/cyber/threatfox-auth`     | `ABUSECH_KEY` optional                              | ThreatFox 7-day IOC window                                          |
+| `GET`  | `/api/gnss/anomalies`           | None                                                | 13 curated GNSS zones + GDELT news                                  |
+| `GET`  | `/api/gps/anomalies`            | None                                                | Alias to /api/gnss/anomalies                                        |
+| `GET`  | `/api/gps/zones`                | None                                                | Curated GNSS zones only                                             |
+| `GET`  | `/api/social/reddit`            | None                                                | Reddit OSINT posts                                                  |
+| `GET`  | `/api/fusion/zones`             | None                                                | All threat zones                                                    |
+| `GET`  | `/api/fusion/viewport`          | None                                                | Viewport-filtered zones (?latMin&latMax&lonMin&lonMax)              |
+| `GET`  | `/api/fusion/global`            | None                                                | Platform overview and domain coverage                               |
+| `GET`  | `/api/imagery/copernicus-token` | `COPERNICUS_CLIENT_ID` + `COPERNICUS_CLIENT_SECRET` | Short-lived Copernicus OAuth2 token                                 |
 
 ---
 
@@ -466,48 +492,48 @@ Upstream failures are returned as:
 
 ### No API key required
 
-| Source | URL | Used for |
-|---|---|---|
-| adsb.one ADS-B | https://api.adsb.one/ | Air layer (replaces blocked OpenSky Network on edge) |
-| USGS Earthquake | https://earthquake.usgs.gov/ | Seismic layer (client-side direct fetch) |
-| wheretheiss.at | https://wheretheiss.at/ | ISS position (client-side, 5-second polling) |
-| CelesTrak | https://celestrak.org/ | Space station TLE + frontend SGP4 propagation |
-| NASA GIBS | https://gibs.earthdata.nasa.gov/ | MODIS/VIIRS satellite imagery tiles |
-| EOX Sentinel-2 | https://s2maps.eu/ | 10 m/px annual cloudless imagery |
-| CISA KEV | https://www.cisa.gov/ | Cyber -- known exploited vulnerabilities |
-| URLhaus | https://urlhaus-api.abuse.ch/ | Cyber -- malware URL feed |
-| ThreatFox | https://threatfox-api.abuse.ch/ | Cyber -- IOC feed |
-| AlienVault OTX (public) | https://otx.alienvault.com/ | Cyber -- threat intelligence pulses |
-| GDELT 2.0 | https://api.gdeltproject.org/ | Conflict, maritime, nuclear, cyber OSINT |
-| GDACS | https://www.gdacs.org/ | Weather storms, earthquakes, volcanoes, floods |
-| ReliefWeb (UN OCHA) | https://api.reliefweb.int/ | Humanitarian disaster data |
-| Reddit public JSON | https://www.reddit.com/ | Social OSINT posts |
+| Source                  | URL                              | Used for                                             |
+| ----------------------- | -------------------------------- | ---------------------------------------------------- |
+| adsb.one ADS-B          | https://api.adsb.one/            | Air layer (replaces blocked OpenSky Network on edge) |
+| USGS Earthquake         | https://earthquake.usgs.gov/     | Seismic layer (client-side direct fetch)             |
+| wheretheiss.at          | https://wheretheiss.at/          | ISS position (client-side, 5-second polling)         |
+| CelesTrak               | https://celestrak.org/           | Space station TLE + frontend SGP4 propagation        |
+| NASA GIBS               | https://gibs.earthdata.nasa.gov/ | MODIS/VIIRS satellite imagery tiles                  |
+| EOX Sentinel-2          | https://s2maps.eu/               | 10 m/px annual cloudless imagery                     |
+| CISA KEV                | https://www.cisa.gov/            | Cyber -- known exploited vulnerabilities             |
+| URLhaus                 | https://urlhaus-api.abuse.ch/    | Cyber -- malware URL feed                            |
+| ThreatFox               | https://threatfox-api.abuse.ch/  | Cyber -- IOC feed                                    |
+| AlienVault OTX (public) | https://otx.alienvault.com/      | Cyber -- threat intelligence pulses                  |
+| GDELT 2.0               | https://api.gdeltproject.org/    | Conflict, maritime, nuclear, cyber OSINT             |
+| GDACS                   | https://www.gdacs.org/           | Weather storms, earthquakes, volcanoes, floods       |
+| ReliefWeb (UN OCHA)     | https://api.reliefweb.int/       | Humanitarian disaster data                           |
+| Reddit public JSON      | https://www.reddit.com/          | Social OSINT posts                                   |
 
 ### Free registration required
 
-| Source | Registration URL | Variable |
-|---|---|---|
-| NASA FIRMS | https://firms.modaps.eosdis.nasa.gov/api/ | `NASA_FIRMS_KEY` |
-| OpenWeatherMap | https://openweathermap.org/appid | `OWM_KEY` |
-| N2YO | https://www.n2yo.com/api/ | `N2YO_KEY` |
-| Global Fishing Watch | https://globalfishingwatch.org/our-apis/ | `GFW_TOKEN` |
-| AVWX | https://avwx.rest/ | `AVWX_KEY` |
-| AlienVault OTX | https://otx.alienvault.com/ | `OTX_KEY` |
-| abuse.ch | https://abuse.ch/auth/ | `ABUSECH_KEY` |
-| ACLED | https://developer.acleddata.com/ | `ACLED_KEY` + `ACLED_EMAIL` |
-| NewsAPI | https://newsapi.org/register | `NEWS_API_KEY` |
-| Shodan | https://account.shodan.io/ | `SHODAN_KEY` |
-| AISStream | https://aisstream.io/ | `AISSTREAM_KEY` |
-| Space-Track.org | https://www.space-track.org/ | `SPACETRACK_USER` + `SPACETRACK_PASS` |
-| Copernicus Dataspace | https://dataspace.copernicus.eu/ | `COPERNICUS_CLIENT_ID` + `COPERNICUS_CLIENT_SECRET` |
+| Source               | Registration URL                          | Variable                                            |
+| -------------------- | ----------------------------------------- | --------------------------------------------------- |
+| NASA FIRMS           | https://firms.modaps.eosdis.nasa.gov/api/ | `NASA_FIRMS_KEY`                                    |
+| OpenWeatherMap       | https://openweathermap.org/appid          | `OWM_KEY`                                           |
+| N2YO                 | https://www.n2yo.com/api/                 | `N2YO_KEY`                                          |
+| Global Fishing Watch | https://globalfishingwatch.org/our-apis/  | `GFW_TOKEN`                                         |
+| AVWX                 | https://avwx.rest/                        | `AVWX_KEY`                                          |
+| AlienVault OTX       | https://otx.alienvault.com/               | `OTX_KEY`                                           |
+| abuse.ch             | https://abuse.ch/auth/                    | `ABUSECH_KEY`                                       |
+| ACLED                | https://developer.acleddata.com/          | `ACLED_KEY` + `ACLED_EMAIL`                         |
+| NewsAPI              | https://newsapi.org/register              | `NEWS_API_KEY`                                      |
+| Shodan               | https://account.shodan.io/                | `SHODAN_KEY`                                        |
+| AISStream            | https://aisstream.io/                     | `AISSTREAM_KEY`                                     |
+| Space-Track.org      | https://www.space-track.org/              | `SPACETRACK_USER` + `SPACETRACK_PASS`               |
+| Copernicus Dataspace | https://dataspace.copernicus.eu/          | `COPERNICUS_CLIENT_ID` + `COPERNICUS_CLIENT_SECRET` |
 
 ### Commercial / paid
 
-| Source | Variable | Notes |
-|---|---|---|
-| ADS-B Exchange (military air) | `RAPIDAPI_KEY` | Via RapidAPI marketplace |
-| Cesium Ion | `CESIUM_TOKEN` | 3D globe and terrain tiles |
-| Planet Labs | `PLANET_API_KEY` | Commercial satellite imagery (no active integration yet) |
+| Source                        | Variable         | Notes                                                    |
+| ----------------------------- | ---------------- | -------------------------------------------------------- |
+| ADS-B Exchange (military air) | `RAPIDAPI_KEY`   | Via RapidAPI marketplace                                 |
+| Cesium Ion                    | `CESIUM_TOKEN`   | 3D globe and terrain tiles                               |
+| Planet Labs                   | `PLANET_API_KEY` | Commercial satellite imagery (no active integration yet) |
 
 ---
 
@@ -540,17 +566,24 @@ Press **T** or click the clock icon to open the timeline scrubber.
 
 The **SOURCES** tab shows the health of all configured sources.
 
-| Status | Meaning |
-|---|---|
-| `live` | Source responded within timeout with valid data |
-| `configured` | API key is set. Not auto-probed (to avoid burning rate limits). |
-| `no-key` | API key environment variable not set. Layer returns `_upstream_error`. |
-| `error` | HTTP error or timeout on probe |
+| Status       | Meaning                                                                |
+| ------------ | ---------------------------------------------------------------------- |
+| `live`       | Source responded within timeout with valid data                        |
+| `configured` | API key is set. Not auto-probed (to avoid burning rate limits).        |
+| `no-key`     | API key environment variable not set. Layer returns `_upstream_error`. |
+| `error`      | HTTP error or timeout on probe                                         |
 
 `GET /api/sources/health` probes all free sources in parallel (8-second timeout) and returns:
 
 ```json
-{ "sources": [{ "name": "USGS Seismic", "status": "live", "latency_ms": 210 }, { "name": "NASA FIRMS", "status": "configured", "key_configured": true }], "total": 17, "live": 7 }
+{
+  "sources": [
+    { "name": "USGS Seismic", "status": "live", "latency_ms": 210 },
+    { "name": "NASA FIRMS", "status": "configured", "key_configured": true }
+  ],
+  "total": 17,
+  "live": 7
+}
 ```
 
 In the UI: SOURCES tab -> Refresh Sources. Each row shows name, status badge, latency, and timestamp.
@@ -577,6 +610,7 @@ Open DevTools Console. Most common causes:
 ### Missing Leaflet (L is not defined)
 
 Leaflet is loaded from `https://unpkg.com/leaflet@1.9.4/dist/leaflet.js`. If blocked:
+
 - Verify CSP headers allow `unpkg.com` in `script-src` and `style-src`.
 - Consider hosting Leaflet in `public/static/` as a self-hosted fallback.
 
@@ -603,6 +637,7 @@ Leaflet is loaded from `https://unpkg.com/leaflet@1.9.4/dist/leaflet.js`. If blo
 ### Build failure
 
 Run `npm run build` and check output:
+
 - TypeScript errors in `src/index.tsx` will block the build.
 - The build output should end with `dist/_worker.js XX kB`.
 - If wrangler reports an unrecognized `compatibility_date`, update: `npm update wrangler`.
@@ -635,17 +670,17 @@ sentinel-os/
 
 ## Keyboard Shortcuts
 
-| Key | Action |
-|---|---|
-| `1` | Layers panel |
-| `2` | Threat board |
-| `3` | Sources / source health |
-| `S` | Satellite imagery panel |
-| `Z` | Toggle threat zone overlays |
-| `R` | Refresh all feeds |
-| `/ or F` | Focus search |
-| `T` | Toggle timeline replay scrubber |
-| `Escape` | Close panel / dismiss search |
+| Key      | Action                          |
+| -------- | ------------------------------- |
+| `1`      | Layers panel                    |
+| `2`      | Threat board                    |
+| `3`      | Sources / source health         |
+| `S`      | Satellite imagery panel         |
+| `Z`      | Toggle threat zone overlays     |
+| `R`      | Refresh all feeds               |
+| `/ or F` | Focus search                    |
+| `T`      | Toggle timeline replay scrubber |
+| `Escape` | Close panel / dismiss search    |
 
 ---
 
@@ -653,13 +688,13 @@ sentinel-os/
 
 Five free tile sources are available via the SAT panel (press `S`):
 
-| Product | Source | Resolution | Cadence |
-|---|---|---|---|
-| MODIS Terra True Color | NASA GIBS | 250 m/px | Daily |
-| MODIS Aqua True Color | NASA GIBS | 250 m/px | Daily |
-| VIIRS SNPP True Color | NASA GIBS | 250 m/px | Daily |
-| VIIRS Nighttime Lights | NASA GIBS | Monthly composite | Monthly |
-| Sentinel-2 Cloudless | EOX S2Maps.eu | 10 m/px | Annual mosaic |
+| Product                | Source        | Resolution        | Cadence       |
+| ---------------------- | ------------- | ----------------- | ------------- |
+| MODIS Terra True Color | NASA GIBS     | 250 m/px          | Daily         |
+| MODIS Aqua True Color  | NASA GIBS     | 250 m/px          | Daily         |
+| VIIRS SNPP True Color  | NASA GIBS     | 250 m/px          | Daily         |
+| VIIRS Nighttime Lights | NASA GIBS     | Monthly composite | Monthly       |
+| Sentinel-2 Cloudless   | EOX S2Maps.eu | 10 m/px           | Annual mosaic |
 
 The authenticated Copernicus WMTS layer requires `COPERNICUS_CLIENT_ID` and `COPERNICUS_CLIENT_SECRET`. The server returns a short-lived OAuth2 token via `/api/imagery/copernicus-token`.
 

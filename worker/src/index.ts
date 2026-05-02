@@ -1,20 +1,20 @@
-import { Hono } from 'hono'
+import { Hono } from "hono";
 
-const app = new Hono()
+const app = new Hono();
 
-app.get('/', (c) => {
+app.get("/", (c) => {
   return c.json({
-    name: 'SENTINEL-X',
-    status: 'operational',
-    timestamp: new Date().toISOString()
-  })
-})
+    name: "SENTINEL-X",
+    status: "operational",
+    timestamp: new Date().toISOString(),
+  });
+});
 
-app.get('/intel/feed', (c) => {
+app.get("/intel/feed", (c) => {
   return c.json({
     feeds: [],
-    message: 'Fusion engine placeholder'
-  })
-})
+    message: "Fusion engine placeholder",
+  });
+});
 
-export default app
+export default app;
