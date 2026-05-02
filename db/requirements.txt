@@ -1,0 +1,41 @@
+# Python requirements for SENTINEL-X API
+
+# Web framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+# Database
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.25
+alembic==1.13.1
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# AI / ML
+groq==0.4.2
+
+# File handling
+aiofiles==23.2.1
+python-magic==0.4.27
+
+# HTTP client
+aiohttp==3.9.3
+
+# Caching
+redis==5.0.1
+
+# Utilities
+python-dotenv==1.0.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+phonenumbers==8.13.27
+timezonefinder==6.2.0
+
+# For SSE (Server-Sent Events)
+sse-starlette==2.0.0
+
+# Validation
+email-validator==2.1.0.post1
