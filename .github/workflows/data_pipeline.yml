@@ -1,0 +1,130 @@
+name: Free Training Data Pipeline
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Daily at midnight
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  collect-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          pip install aiohttp requests python-dateutil
+          
+      - name: Run data collection
+        run: |
+          python scripts/collect_free_training_data.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Commit data
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "data: Collect free training data"
+          file_pattern: data/*.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  send-to-convex:
+    needs: collect-data
+    runs-on: ubuntu-latest
+    if: env.CONVEX_URL
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          pip install aiohttp requests
+          
+      - name: Send to Convex
+        run: |
+          python src/sentinel_x/convex_bridge.py
+        env:
+          CONVEX_URL: ${{ secrets.CONVEX_URL }}
+          CONVEX_PRIVATE_KEY: ${{ secrets.CONVEX_PRIVATE_KEY }}
+        continue-on-error: true
+
+  create-pr:
+    needs: collect-data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          
+      - name: Get latest data file
+        run: |
+          ls -la data/ | tail -1
+          
+      - name: Create PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            const dataDir = './data';
+            const files = fs.readdirSync(dataDir).filter(f => f.endsWith('.json'));
+            const latestFile = files.sort().pop();
+            
+            if (!latestFile) {
+              core.setFailed('No data file found');
+              return;
+            }
+            
+            const content = fs.readFileSync(path.join(dataDir, latestFile), 'utf-8');
+            const data = JSON.parse(content);
+            
+            console.log(`Data file: ${latestFile}`);
+            console.log(`Samples: ${data.length}`);
+
+  update-ml-model:
+    needs: collect-data
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Train ML model
+        run: |
+          echo "Training ML model with new data..."
+          # Placeholder for ML training
+          python -c "
+          import json
+          import os
+          
+          data_dir = './data'
+          files = [f for f in os.listdir(data_dir) if f.endswith('.json')]
+          files.sort()
+          
+          if files:
+            with open(os.path.join(data_dir, files[-1])) as f:
+              data = json.load(f)
+            print(f'Training on {len(data)} samples')
+          "
+          
+      - name: Commit model
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "ml: Update model with new training data"
+          file_pattern: models/*.pt
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

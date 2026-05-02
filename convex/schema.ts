@@ -1,512 +1,352 @@
-import { authTables } from "@convex-dev/auth/server";
-import { defineSchema, defineTable } from "convex/server";
-import { v } from "convex/values";
+"""
+SENTINEL-X Convex Schema
+All tables for threat intelligence platform
+"""
+import { defineSchema, defineTable } from "convex/server"
+import { assert } from "convex/validators"
+import { v } from "convex/values"
 
-const schema = defineSchema({
-	...authTables,
+export default defineSchema({
+  // === USERS & AUTH ===
+  users: defineTable("users")
+    .schema({
+      name: v.string(),
+      email: v.string(),
+      role: v.union(
+        v.literal("admin"),
+        v.literal("analyst"),
+        v.literal("viewer")
+      ),
+      avatarUrl: v.optional(v.string()),
+      lastActive: v.optional(v.number()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+    .index("email", ["email"])
+    .index("role", ["role"]),
 
-	// ==================== CORE TABLES ====================
+  // === THREAT EVENTS ===
+  threatEvents: defineTable("threat_events")
+    .schema({
+      title: v.string(),
+      description: v.string(),
+      severity: v.union(
+        v.literal("critical"),
+        v.literal("high"),
+        v.literal("medium"),
+        v.literal("low")
+      ),
+      threatType: v.union(
+        v.literal("aircraft_incursion"),
+        v.literal("vessel_incident"),
+        v.literal("ais_spoofing"),
+        v.literal("gps_jamming"),
+        v.literal("comms_intercept"),
+        v.literal("radar_jamming"),
+        v.literal("electronic_warfare"),
+        v.literal("other")
+      ),
+      status: v.union(
+        v.literal("new"),
+        v.literal("investigating"),
+        v.literal("confirmed"),
+        v.literal("resolved"),
+        v.literal("false_positive")
+      ),
+      location: v.object({
+        lat: v.number(),
+        lng: v.number(),
+        region: v.optional(v.string()),
+      }),
+      source: v.union(
+        v.literal("ads_b"),
+        v.literal("ais"),
+        v.literal("sigint"),
+        v.literal("osint"),
+        v.literal("geoint"),
+        v.literal("radar"),
+        v.literal("manual")
+      ),
+      entityIds: v.optional(v.array(v.string())),
+      caseId: v.optional(v.string()),
+      createdBy: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+    .index("severity", ["severity"])
+    .index("status", ["status"])
+    .index("createdAt", ["createdAt"])
+    .index("location", ["location"]),
 
-	aircraft: defineTable({
-		icao24: v.string(),
-		callsign: v.string(),
-		originCountry: v.string(),
-		longitude: v.number(),
-		latitude: v.number(),
-		baroAltitude: v.number(),
-		geoAltitude: v.number(),
-		velocity: v.number(),
-		heading: v.number(),
-		verticalRate: v.number(),
-		onGround: v.boolean(),
-		squawk: v.optional(v.string()),
-		category: v.optional(v.string()),
-		jammingFlag: v.boolean(),
-		isMilitary: v.optional(v.boolean()),
-		lastUpdate: v.number(),
-		source: v.optional(v.string()),
-	})
-		.index("by_icao24", ["icao24"])
-		.index("by_jamming", ["jammingFlag"])
-		.index("by_lastUpdate", ["lastUpdate"]),
+  // === ENTITIES ===
+  entities: defineTable("entities")
+    .schema({
+      name: v.string(),
+      callsign: v.optional(v.string()),
+      entityType: v.union(
+        v.literal("aircraft"),
+        v.literal("vessel"),
+        v.literal("facility"),
+        v.literal("signal"),
+        v.literal("person"),
+        v.literal("organization")
+      ),
+      classification: v.union(
+        v.literal("unknown"),
+        v.literal("commercial"),
+        v.literal("military"),
+        v.literal("government"),
+        v.literal("civilian")
+      ),
+      riskLevel: v.union(
+        v.literal("critical"),
+        v.literal("high"),
+        v.literal("medium"),
+        v.literal("low")
+      ),
+      location: v.optional(v.object({
+        lat: v.number(),
+        lng: v.number(),
+        heading: v.optional(v.number()),
+        speed: v.optional(v.number()),
+      })),
+      metadata: v.optional(v.any()),
+      firstSeen: v.number(),
+      lastSeen: v.number(),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+    .index("entityType", ["entityType"])
+    .index("riskLevel", ["riskLevel"])
+    .index("lastSeen", ["lastSeen"]),
 
-	conflictEvents: defineTable({
-		eventId: v.string(),
-		eventDate: v.string(),
-		eventType: v.string(),
-		subEventType: v.string(),
-		actor1: v.string(),
-		actor2: v.optional(v.string()),
-		country: v.string(),
-		region: v.string(),
-		location: v.string(),
-		latitude: v.number(),
-		longitude: v.number(),
-		fatalities: v.number(),
-		notes: v.string(),
-		source: v.string(),
-		severity: v.string(),
-		timestamp: v.number(),
-	})
-		.index("by_eventId", ["eventId"])
-		.index("by_country", ["country"])
-		.index("by_severity", ["severity"])
-		.index("by_timestamp", ["timestamp"]),
+  entityHistory: defineTable("entity_history")
+    .schema({
+      entityId: v.string(),
+      eventType: v.string(),
+      location: v.optional(v.object({
+        lat: v.number(),
+        lng: v.number(),
+      })),
+      metadata: v.optional(v.any()),
+      timestamp: v.number(),
+    })
+    .index("entityId", ["entityId"])
+    .index("timestamp", ["timestamp"]),
 
-	jammingAlerts: defineTable({
-		alertId: v.string(),
-		h3Index: v.string(),
-		centerLat: v.number(),
-		centerLon: v.number(),
-		radius: v.number(),
-		affectedAircraft: v.number(),
-		avgCn0Drop: v.number(),
-		maxCn0Drop: v.number(),
-		severity: v.string(),
-		status: v.string(),
-		detectedAt: v.number(),
-		resolvedAt: v.optional(v.number()),
-		region: v.string(),
-		notes: v.optional(v.string()),
-	})
-		.index("by_alertId", ["alertId"])
-		.index("by_status", ["status"])
-		.index("by_severity", ["severity"])
-		.index("by_detectedAt", ["detectedAt"]),
+  // === CASES ===
+  cases: defineTable("cases")
+    .schema({
+      title: v.string(),
+      description: v.string(),
+      status: v.union(
+        v.literal("open"),
+        v.literal("in_progress"),
+        v.literal("resolved"),
+        v.literal("closed")
+      ),
+      priority: v.union(
+        v.literal("critical"),
+        v.literal("high"),
+        v.literal("medium"),
+        v.literal("low")
+      ),
+      caseType: v.union(
+        v.literal("threat_investigation"),
+        v.literal("intelligence"),
+        v.literal("routine"),
+        v.literal("investigation")
+      ),
+      assignedTo: v.optional(v.string()),
+      threatIds: v.optional(v.array(v.string())),
+      entityIds: v.optional(v.array(v.string())),
+      createdBy: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+    .index("status", ["status"])
+    .index("priority", ["priority"])
+    .index("assignedTo", ["assignedTo"]),
 
-	satelliteScenes: defineTable({
-		sceneId: v.string(),
-		satellite: v.string(),
-		acquisitionDate: v.string(),
-		cloudCover: v.number(),
-		bbox: v.object({
-			minLon: v.number(),
-			minLat: v.number(),
-			maxLon: v.number(),
-			maxLat: v.number(),
-		}),
-		centerLat: v.number(),
-		centerLon: v.number(),
-		resolution: v.number(),
-		processingLevel: v.string(),
-		thumbnailUrl: v.optional(v.string()),
-		downloadUrl: v.optional(v.string()),
-		status: v.string(),
-		timestamp: v.number(),
-	})
-		.index("by_sceneId", ["sceneId"])
-		.index("by_satellite", ["satellite"])
-		.index("by_timestamp", ["timestamp"]),
+  caseNotes: defineTable("case_notes")
+    .schema({
+      caseId: v.string(),
+      content: v.string(),
+      authorId: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+    .index("caseId", ["caseId"]),
 
-	systemAlerts: defineTable({
-		type: v.string(),
-		severity: v.string(),
-		title: v.string(),
-		message: v.string(),
-		source: v.string(),
-		latitude: v.optional(v.number()),
-		longitude: v.optional(v.number()),
-		entityRef: v.optional(v.string()),
-		acknowledged: v.boolean(),
-		timestamp: v.number(),
-	})
-		.index("by_type", ["type"])
-		.index("by_severity", ["severity"])
-		.index("by_acknowledged", ["acknowledged"])
-		.index("by_timestamp", ["timestamp"]),
+  caseTimeline: defineTable("case_timeline")
+    .schema({
+      caseId: v.string(),
+      action: v.string(),
+      details: v.optional(v.any()),
+      actorId: v.optional(v.string()),
+      timestamp: v.number(),
+    })
+    .index("caseId", ["caseId"])
+    .index("timestamp", ["timestamp"]),
 
-	platformStats: defineTable({
-		key: v.string(),
-		value: v.number(),
-		updatedAt: v.number(),
-	}).index("by_key", ["key"]),
+  // === ALERTS ===
+  alerts: defineTable("alerts")
+    .schema({
+      title: v.string(),
+      description: v.string(),
+      severity: v.union(
+        v.literal("critical"),
+        v.literal("high"),
+        v.literal("medium"),
+        v.literal("low")
+      ),
+      status: v.union(
+        v.literal("active"),
+        v.literal("acknowledged"),
+        v.literal("resolved"),
+        v.literal("suppressed")
+      ),
+      source: v.string(),
+      relatedThreatId: v.optional(v.string()),
+      acknowledgedBy: v.optional(v.string()),
+      acknowledgedAt: v.optional(v.number()),
+      resolvedBy: v.optional(v.string()),
+      resolvedAt: v.optional(v.number()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+    .index("status", ["status"])
+    .index("severity", ["severity"]),
 
-	// ==================== LIVE DATA TABLES ====================
+  alertRules: defineTable("alert_rules")
+    .schema({
+      name: v.string(),
+      condition: v.any(),
+      severity: v.union(
+        v.literal("critical"),
+        v.literal("high"),
+        v.literal("medium"),
+        v.literal("low")
+      ),
+      channels: v.array(v.string()),
+      enabled: v.boolean(),
+      cooldownMinutes: v.number(),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+    .index("enabled", ["enabled"]),
 
-	fires: defineTable({
-		sourceId: v.string(),
-		latitude: v.number(),
-		longitude: v.number(),
-		brightness: v.number(),
-		confidence: v.string(),
-		frp: v.number(),
-		satellite: v.string(),
-		acqDate: v.string(),
-		dayNight: v.string(),
-		timestamp: v.number(),
-	})
-		.index("by_sourceId", ["sourceId"])
-		.index("by_timestamp", ["timestamp"]),
+  // === FILES ===
+  fileAttachments: defineTable("file_attachments")
+    .schema({
+      filename: v.string(),
+      storageId: v.string(),
+      mimeType: v.string(),
+      size: v.number(),
+      caseId: v.optional(v.string()),
+      threatId: v.optional(v.string()),
+      entityId: v.optional(v.string()),
+      uploadedBy: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+    .index("caseId", ["caseId"])
+    .index("threatId", ["threatId"])
+    .index("entityId", ["entityId"]),
 
-	vessels: defineTable({
-		mmsi: v.string(),
-		name: v.string(),
-		latitude: v.number(),
-		longitude: v.number(),
-		speed: v.number(),
-		course: v.number(),
-		shipType: v.string(),
-		flag: v.string(),
-		destination: v.string(),
-		source: v.string(),
-		timestamp: v.number(),
-	})
-		.index("by_mmsi", ["mmsi"])
-		.index("by_source", ["source"])
-		.index("by_timestamp", ["timestamp"]),
+  // === ANALYTICS ===
+  analyticsSnapshots: defineTable("analytics_snapshots")
+    .schema({
+      snapshotType: v.string(),
+      data: v.any(),
+      createdAt: v.number(),
+    })
+    .index("snapshotType", ["snapshotType"])
+    .index("createdAt", ["createdAt"]),
 
-	newsItems: defineTable({
-		title: v.string(),
-		description: v.string(),
-		url: v.string(),
-		sourceName: v.string(),
-		publishedAt: v.string(),
-		category: v.string(),
-		latitude: v.optional(v.number()),
-		longitude: v.optional(v.number()),
-		imageUrl: v.optional(v.string()),
-		timestamp: v.number(),
-	})
-		.index("by_category", ["category"])
-		.index("by_timestamp", ["timestamp"]),
+  // === REPORTS ===
+  reports: defineTable("reports")
+    .schema({
+      title: v.string(),
+      reportType: v.union(
+        v.literal("daily"),
+        v.literal("weekly"),
+        v.literal("monthly"),
+        v.literal("custom")
+      ),
+      content: v.any(),
+      filterCriteria: v.optional(v.any()),
+      generatedBy: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+    .index("reportType", ["reportType"])
+    .index("createdAt", ["createdAt"]),
 
-	cyberThreats: defineTable({
-		threatId: v.string(),
-		type: v.string(),
-		latitude: v.number(),
-		longitude: v.number(),
-		ip: v.string(),
-		port: v.optional(v.number()),
-		service: v.string(),
-		severity: v.string(),
-		description: v.string(),
-		source: v.string(),
-		timestamp: v.number(),
-	})
-		.index("by_threatId", ["threatId"])
-		.index("by_source", ["source"])
-		.index("by_severity", ["severity"])
-		.index("by_timestamp", ["timestamp"]),
+  // === AUDIT LOGS ===
+  auditLogs: defineTable("audit_logs")
+    .schema({
+      action: v.string(),
+      entityType: v.string(),
+      entityId: v.string(),
+      actorId: v.optional(v.string()),
+      oldValue: v.optional(v.any()),
+      newValue: v.optional(v.any()),
+      timestamp: v.number(),
+    })
+    .index("entityType", ["entityType"])
+    .index("entityId", ["entityId"])
+    .index("timestamp", ["timestamp"])
+    .index("actorId", ["actorId"]),
 
-	weatherData: defineTable({
-		locationId: v.string(),
-		name: v.string(),
-		latitude: v.number(),
-		longitude: v.number(),
-		temp: v.number(),
-		humidity: v.number(),
-		windSpeed: v.number(),
-		windDeg: v.number(),
-		pressure: v.number(),
-		visibility: v.number(),
-		description: v.string(),
-		icon: v.string(),
-		timestamp: v.number(),
-	})
-		.index("by_locationId", ["locationId"])
-		.index("by_timestamp", ["timestamp"]),
+  // === ML TRAINING DATA ===
+  mlTrainingData: defineTable("ml_training_data")
+    .schema({
+      features: v.any(),
+      label: v.number(),
+      source: v.union(
+        v.literal("opensky"),
+        v.literal("mitre"),
+        v.literal("historical"),
+        v.literal("synthetic")
+      ),
+      threatType: v.optional(v.string()),
+      metadata: v.optional(v.any()),
+      createdAt: v.number(),
+    })
+    .index("source", ["source"])
+    .index("label", ["label"])
+    .index("threatType", ["threatType"]),
 
-	satellitePositions: defineTable({
-		satId: v.string(),
-		satName: v.string(),
-		latitude: v.number(),
-		longitude: v.number(),
-		altitude: v.number(),
-		velocity: v.number(),
-		timestamp: v.number(),
-	})
-		.index("by_satId", ["satId"])
-		.index("by_timestamp", ["timestamp"]),
+  // === ENTITY LINKS ===
+  entityLinks: defineTable("entity_links")
+    .schema({
+      sourceEntityId: v.string(),
+      targetEntityId: v.string(),
+      relationshipType: v.union(
+        v.literal("related"),
+        v.literal("same_group"),
+        v.literal("parent"),
+        v.literal("child"),
+        v.literal("associated")
+      ),
+      confidence: v.number(),
+      createdAt: v.number(),
+    })
+    .index("sourceEntityId", ["sourceEntityId"])
+    .index("targetEntityId", ["targetEntityId"]),
 
-	dataSourceStatus: defineTable({
-		sourceId: v.string(),
-		name: v.string(),
-		status: v.string(),
-		lastFetch: v.number(),
-		recordCount: v.number(),
-		errorMessage: v.optional(v.string()),
-		consecutiveFailures: v.optional(v.number()),
-		circuitState: v.optional(v.string()),
-		lastFailureAt: v.optional(v.number()),
-		recoveryTimeout: v.optional(v.number()),
-	}).index("by_sourceId", ["sourceId"]),
-
-	// ==================== NEW: REFERENCE REPO FEATURES ====================
-
-	/** USGS Earthquake events — Seismic layer */
-	seismicEvents: defineTable({
-		eventId: v.string(),
-		latitude: v.number(),
-		longitude: v.number(),
-		depth: v.number(),
-		magnitude: v.number(),
-		magType: v.string(),
-		place: v.string(),
-		time: v.number(),
-		tsunami: v.boolean(),
-		severity: v.string(),
-		url: v.string(),
-		timestamp: v.number(),
-	})
-		.index("by_eventId", ["eventId"])
-		.index("by_magnitude", ["magnitude"])
-		.index("by_timestamp", ["timestamp"]),
-
-	/** GDACS + ReliefWeb — Disasters layer */
-	disasters: defineTable({
-		eventId: v.string(),
-		title: v.string(),
-		eventType: v.string(), // EQ, TC, FL, VO, TS, DR, EP
-		latitude: v.number(),
-		longitude: v.number(),
-		severity: v.string(),
-		alertLevel: v.string(), // green, orange, red
-		country: v.string(),
-		description: v.string(),
-		source: v.string(), // "gdacs" | "reliefweb"
-		url: v.optional(v.string()),
-		fromDate: v.string(),
-		timestamp: v.number(),
-	})
-		.index("by_eventId", ["eventId"])
-		.index("by_eventType", ["eventType"])
-		.index("by_severity", ["severity"])
-		.index("by_timestamp", ["timestamp"]),
-
-	/** Reddit OSINT — Social intelligence layer */
-	socialPosts: defineTable({
-		postId: v.string(),
-		subreddit: v.string(),
-		title: v.string(),
-		url: v.string(),
-		author: v.string(),
-		score: v.number(),
-		numComments: v.number(),
-		permalink: v.string(),
-		thumbnail: v.optional(v.string()),
-		latitude: v.optional(v.number()),
-		longitude: v.optional(v.number()),
-		provenance: v.string(), // "direct-api" | "geocoded-inferred" | "no-location"
-		confidence: v.number(),
-		timestamp: v.number(),
-	})
-		.index("by_postId", ["postId"])
-		.index("by_subreddit", ["subreddit"])
-		.index("by_timestamp", ["timestamp"]),
-
-	/** CISA KEV + OTX + URLhaus + ThreatFox — Enhanced cyber intel */
-	cyberIntel: defineTable({
-		intelId: v.string(),
-		type: v.string(), // "kev" | "otx" | "urlhaus" | "threatfox"
-		title: v.string(),
-		description: v.string(),
-		severity: v.string(),
-		source: v.string(),
-		sourceUrl: v.optional(v.string()),
-		indicator: v.optional(v.string()), // CVE, IOC, URL
-		tags: v.optional(v.array(v.string())),
-		timestamp: v.number(),
-	})
-		.index("by_intelId", ["intelId"])
-		.index("by_type", ["type"])
-		.index("by_severity", ["severity"])
-		.index("by_timestamp", ["timestamp"]),
-
-	/** GDELT — Multi-category OSINT events */
-	gdeltEvents: defineTable({
-		eventId: v.string(),
-		title: v.string(),
-		category: v.string(), // "conflict" | "maritime" | "nuclear" | "cyber"
-		latitude: v.number(),
-		longitude: v.number(),
-		sourceUrl: v.string(),
-		sourceName: v.string(),
-		confidence: v.number(),
-		provenance: v.string(),
-		severity: v.string(),
-		timestamp: v.number(),
-	})
-		.index("by_eventId", ["eventId"])
-		.index("by_category", ["category"])
-		.index("by_timestamp", ["timestamp"]),
-
-	/** ISS — Live orbital position (wheretheiss.at, free) */
-	issPosition: defineTable({
-		latitude: v.number(),
-		longitude: v.number(),
-		altitude: v.number(),
-		velocity: v.number(),
-		visibility: v.string(),
-		timestamp: v.number(),
-	}).index("by_timestamp", ["timestamp"]),
-
-	/** Threat Zones — Pre-computed fusion threat scoring (12 global hotspots) */
-	threatZones: defineTable({
-		name: v.string(),
-		latitude: v.number(),
-		longitude: v.number(),
-		radius: v.number(),
-		baseScore: v.number(),
-		type: v.string(),
-		currentScore: v.number(),
-		activeEvents: v.number(),
-		lastUpdated: v.number(),
-	}).index("by_name", ["name"]),
-
-	// ==================== CASE MANAGEMENT ====================
-
-	cases: defineTable({
-		caseId: v.string(),
-		title: v.string(),
-		description: v.string(),
-		status: v.string(), // "open" | "investigating" | "escalated" | "resolved" | "closed"
-		priority: v.string(), // "critical" | "high" | "medium" | "low"
-		assignee: v.optional(v.string()),
-		createdBy: v.string(),
-		domain: v.string(),
-		tags: v.array(v.string()),
-		linkedEntities: v.array(v.string()), // entity IDs
-		linkedAlerts: v.array(v.string()), // alert IDs
-		latitude: v.optional(v.number()),
-		longitude: v.optional(v.number()),
-		createdAt: v.number(),
-		updatedAt: v.number(),
-		resolvedAt: v.optional(v.number()),
-	})
-		.index("by_caseId", ["caseId"])
-		.index("by_status", ["status"])
-		.index("by_priority", ["priority"])
-		.index("by_assignee", ["assignee"])
-		.index("by_createdAt", ["createdAt"]),
-
-	caseNotes: defineTable({
-		caseId: v.string(),
-		author: v.string(),
-		content: v.string(),
-		type: v.string(), // "note" | "status_change" | "evidence" | "assignment"
-		metadata: v.optional(v.string()), // JSON string for extra data
-		timestamp: v.number(),
-	})
-		.index("by_caseId", ["caseId"])
-		.index("by_timestamp", ["timestamp"]),
-
-	caseEvidence: defineTable({
-		caseId: v.string(),
-		title: v.string(),
-		type: v.string(), // "screenshot" | "document" | "log" | "entity_snapshot" | "link"
-		content: v.string(), // URL or text content
-		addedBy: v.string(),
-		timestamp: v.number(),
-	})
-		.index("by_caseId", ["caseId"])
-		.index("by_timestamp", ["timestamp"]),
-
-	// ==================== KNOWLEDGE GRAPH ====================
-
-	kgNodes: defineTable({
-		nodeId: v.string(),
-		type: v.string(), // "person" | "organization" | "vessel" | "aircraft" | "facility" | "event" | "location" | "network"
-		label: v.string(),
-		properties: v.string(), // JSON string
-		domain: v.string(),
-		latitude: v.optional(v.number()),
-		longitude: v.optional(v.number()),
-		riskScore: v.optional(v.number()),
-		createdAt: v.number(),
-		updatedAt: v.number(),
-	})
-		.index("by_nodeId", ["nodeId"])
-		.index("by_type", ["type"])
-		.index("by_label", ["label"])
-		.index("by_domain", ["domain"]),
-
-	kgEdges: defineTable({
-		edgeId: v.string(),
-		sourceNodeId: v.string(),
-		targetNodeId: v.string(),
-		relationship: v.string(),
-		confidence: v.number(),
-		properties: v.optional(v.string()),
-		source: v.string(),
-		firstSeen: v.number(),
-		lastSeen: v.number(),
-		expiresAt: v.optional(v.number()),
-	})
-		.index("by_edgeId", ["edgeId"])
-		.index("by_sourceNodeId", ["sourceNodeId"])
-		.index("by_targetNodeId", ["targetNodeId"])
-		.index("by_relationship", ["relationship"])
-		.index("by_expiresAt", ["expiresAt"]),
-
-	// ==================== WORKSPACES ====================
-
-	workspaces: defineTable({
-		workspaceId: v.string(),
-		name: v.string(),
-		description: v.string(),
-		type: v.string(), // "mission" | "investigation" | "monitoring" | "exercise"
-		status: v.string(), // "active" | "archived" | "planning"
-		ownerId: v.string(),
-		members: v.array(v.string()),
-		layers: v.array(v.string()), // active layer IDs
-		aoi: v.optional(v.string()), // area of interest GeoJSON
-		createdAt: v.number(),
-		updatedAt: v.number(),
-	})
-		.index("by_workspaceId", ["workspaceId"])
-		.index("by_status", ["status"])
-		.index("by_ownerId", ["ownerId"]),
-
-	// ==================== AUDIT LOG ====================
-
-	auditLog: defineTable({
-		action: v.string(), // "login" | "logout" | "create" | "update" | "delete" | "export" | "search" | "view"
-		actor: v.string(),
-		resource: v.string(), // "case" | "entity" | "alert" | "workspace" | "user" | "source"
-		resourceId: v.optional(v.string()),
-		details: v.optional(v.string()),
-		ipAddress: v.optional(v.string()),
-		timestamp: v.number(),
-	})
-		.index("by_actor", ["actor"])
-		.index("by_resource", ["resource"])
-		.index("by_timestamp", ["timestamp"]),
-
-	// ==================== USERS EXTENDED ====================
-
-	userProfiles: defineTable({
-		userId: v.string(),
-		displayName: v.string(),
-		role: v.string(), // "super_admin" | "admin" | "analyst" | "operator" | "viewer" | "executive"
-		department: v.optional(v.string()),
-		clearanceLevel: v.optional(v.string()),
-		isActive: v.boolean(),
-		lastLogin: v.optional(v.number()),
-		preferences: v.optional(v.string()), // JSON
-		createdAt: v.number(),
-	})
-		.index("by_userId", ["userId"])
-		.index("by_role", ["role"]),
-
-	// ==================== AI COPILOT ====================
-
-	copilotSessions: defineTable({
-		sessionId: v.string(),
-		userId: v.string(),
-		messages: v.string(), // JSON array of messages
-		context: v.optional(v.string()), // current view context
-		createdAt: v.number(),
-		updatedAt: v.number(),
-	})
-		.index("by_sessionId", ["sessionId"])
-		.index("by_userId", ["userId"]),
-
-	// Runtime config (API keys stored via HTTP endpoint when env vars unavailable)
-	runtimeConfig: defineTable({
-		key: v.string(),
-		value: v.string(),
-		updatedAt: v.number(),
-	}).index("by_key", ["key"]),
-});
-
-export default schema;
+  // === AI ASSISTANT ===
+  aiConversations: defineTable("ai_conversations")
+    .schema({
+      userId: v.optional(v.string()),
+      title: v.string(),
+      messages: v.array(v.object({
+        role: v.union(v.literal("user"), v.literal("assistant")),
+        content: v.string(),
+        timestamp: v.number(),
+      })),
+      context: v.optional(v.any()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+    .index("userId", ["userId"])
+    .index("createdAt", ["createdAt"]),
+})
