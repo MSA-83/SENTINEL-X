@@ -4,11 +4,13 @@ This is a lightweight helper that uses the GitHub REST API and a token
 provided via environment variables. It creates a PR with a detailed body based
 on the current patch set.
 """
+
 from __future__ import annotations
 
+import json
 import os
 import sys
-import json
+
 import requests
 
 OWNER = "MSA-83"
@@ -44,43 +46,46 @@ BODY = """
 
 """
 
+
 def main():
-  token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
-  if not token:
-    print("No GitHub token found in GITHUB_TOKEN or GH_TOKEN environment variables.")
-    print("Please supply a token with repo scope as a secret in your CI or environment.")
-    sys.exit(0)  # exit gracefully; the PR can be created by CI later
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    if not token:
+        print(
+            "No GitHub token found in GITHUB_TOKEN or GH_TOKEN environment variables."
+        )
+        print(
+            "Please supply a token with repo scope as a secret in your CI or environment."
+        )
+        sys.exit(0)  # exit gracefully; the PR can be created by CI later
 
-  headers = {
-    "Authorization": f"token {token}",
-    "Accept": "application/vnd.github+json",
-  }
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+    }
 
-  url = f"https://api.github.com/repos/{OWNER}/{REPO}/pulls"
+    url = f"https://api.github.com/repos/{OWNER}/{REPO}/pulls"
 
-  # Check if PR already exists
-  params = {"state": "open", "head": f"{OWNER}:{HEAD_BRANCH}", "base": BASE_BRANCH}
-  resp = requests.get(url, headers=headers, params=params)
-  if resp.ok:
-    data = resp.json()
-    if isinstance(data, list) and len(data) > 0:
-      pr_url = data[0].get("html_url")
-      print(f"PR already exists: {pr_url}")
-      return
+    # Check if PR already exists
+    params = {"state": "open",
+              "head": f"{OWNER}:{HEAD_BRANCH}", "base": BASE_BRANCH}
+    resp = requests.get(url, headers=headers, params=params)
+    if resp.ok:
+        data = resp.json()
+        if isinstance(data, list) and len(data) > 0:
+            pr_url = data[0].get("html_url")
+            print(f"PR already exists: {pr_url}")
+            return
 
-  payload = {
-    "title": TITLE,
-    "head": HEAD_BRANCH,
-    "base": BASE_BRANCH,
-    "body": BODY
-  }
+    payload = {"title": TITLE, "head": HEAD_BRANCH,
+               "base": BASE_BRANCH, "body": BODY}
 
-  r = requests.post(url, headers=headers, data=json.dumps(payload))
-  if r.ok:
-    pr = r.json()
-    print(f"PR created: {pr.get('html_url')}")
-  else:
-    print(f"Failed to create PR: {r.status_code} - {r.text}")
+    r = requests.post(url, headers=headers, data=json.dumps(payload))
+    if r.ok:
+        pr = r.json()
+        print(f"PR created: {pr.get('html_url')}")
+    else:
+        print(f"Failed to create PR: {r.status_code} - {r.text}")
+
 
 if __name__ == "__main__":
-  main()
+    main()
