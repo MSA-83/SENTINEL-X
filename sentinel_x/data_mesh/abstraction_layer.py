@@ -79,6 +79,13 @@ class DataMeshRegistry:
     def get_product(self, product_id: str) -> Optional[DataProduct]:
         return self._registry.get(product_id)
 
+    def export_registry(self) -> str:
+        """Return a JSON string representation of the registry for external tooling"""
+        data = {
+            "products": {pid: p.to_dict() for pid, p in self._registry.items()}
+        }
+        return json.dumps(data, indent=2)
+
 
 def get_registry() -> DataMeshRegistry:
     return DataMeshRegistry()

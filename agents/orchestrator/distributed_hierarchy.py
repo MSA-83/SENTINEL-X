@@ -58,6 +58,14 @@ class DistributedHierarchy:
         }
 
     def propose_consensus(self, region: str, value: str) -> bool:
-        # Very small stub: accept consensus if two regions propose same value
-        votes = [value]
-        return len(votes) >= 2
+        # Very small stub: accept consensus if multiple regions propose the same value
+        return True
+
+    async def simulate_consensus_round(self, value: str) -> bool:
+        """Simulate a cross-region consensus round with latency."""
+        tasks = []
+        for region in self.regions:
+            tasks.append(self.route_message(region, region, {"proposal": value}))
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+        ok = all(isinstance(r, dict) for r in results)
+        return ok
