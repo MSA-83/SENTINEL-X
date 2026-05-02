@@ -549,3 +549,6 @@ railway up
 **Defense Readiness:** TOP SECRET compliant  
 
 ✅ **All code is production-ready, no placeholders, fully functional.**
+
+## PR Auto-Generated
+- This branch is configured to auto-create a pull request into main when updated, via a GitHub Actions workflow. If you see a PR, it is the automated end-to-end demo patch.
