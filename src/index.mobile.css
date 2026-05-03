@@ -1,0 +1,383 @@
+/* Mobile responsive styles */
+
+/* Mobile breakpoints */
+@screen-xs: 480px;
+@screen-sm: 640px;
+@screen-md: 768px;
+@screen-lg: 1024px;
+@screen-xl: 1280px;
+
+/* Base responsive utilities */
+@media (max-width: 639px) {
+  .hide-mobile {
+    display: none !important;
+  }
+}
+
+@media (min-width: 640px) {
+  .hide-desktop {
+    display: none !important;
+  }
+}
+
+/* Container adjustments */
+.container {
+  @media (max-width: 640px) {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+}
+
+/* Sidebar responsive */
+.sidebar {
+  @media (max-width: 1024px) {
+    width: 100%;
+    position: fixed;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+  }
+  
+  &.open {
+    @media (max-width: 1024px) {
+      transform: translateX(0);
+    }
+  }
+}
+
+/* Grid adjustments */
+.grid-cols-2 {
+  @media (max-width: 640px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.grid-cols-3 {
+  @media (max-width: 768px) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  @media (max-width: 480px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.grid-cols-4 {
+  @media (max-width: 1024px) {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  
+  @media (max-width: 768px) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  @media (max-width: 480px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.grid-cols-5 {
+  @media (max-width: 768px) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  @media (max-width: 480px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Typography */
+h1 {
+  @media (max-width: 640px) {
+    font-size: 1.5rem;
+  }
+}
+
+h2 {
+  @media (max-width: 640px) {
+    font-size: 1.25rem;
+  }
+}
+
+.text-2xl {
+  @media (max-width: 640px) {
+    font-size: 1.25rem;
+  }
+}
+
+.text-3xl {
+  @media (max-width: 640px) {
+    font-size: 1.5rem;
+  }
+}
+
+/* Cards */
+.card {
+  @media (max-width: 480px) {
+    padding: 0.75rem;
+  }
+}
+
+/* Buttons */
+.btn {
+  @media (max-width: 480px) {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+  }
+  
+  &-full {
+    @media (max-width: 640px) {
+      width: 100%;
+    }
+  }
+}
+
+/* Input */
+input, textarea, select {
+  @media (max-width: 480px) {
+    font-size: 16px; /* Prevents iOS zoom */
+  }
+}
+
+/* Tables */
+.table-responsive {
+  @media (max-width: 768px) {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Map container */
+.map-container {
+  @media (max-width: 640px) {
+    height: 300px;
+  }
+}
+
+/* Modal responsive */
+.modal {
+  @media (max-width: 640px) {
+    &-content {
+      width: 100%;
+      height: 100%;
+      max-width: 100%;
+      max-height: 100%;
+      border-radius: 0;
+    }
+    
+    &-header {
+      padding: 1rem;
+    }
+    
+    &-body {
+      padding: 1rem;
+    }
+    
+    &-footer {
+      padding: 1rem;
+      position: sticky;
+      bottom: 0;
+    }
+  }
+}
+
+/* Navigation */
+.nav {
+  @media (max-width: 768px) {
+    &-item {
+      padding: 0.75rem;
+      font-size: 0.875rem;
+    }
+  }
+  
+  &-mobile {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: var(--color-background);
+    border-top: 1px solid var(--color-border);
+    padding: 0.5rem;
+    justify-content: space-around;
+    
+    &-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0.5rem;
+      color: var(--color-muted);
+      font-size: 0.75rem;
+      
+      &.active {
+        color: var(--color-primary);
+      }
+    }
+  }
+}
+
+/* Status badges */
+.badge {
+  @media (max-width: 480px) {
+    font-size: 0.625rem;
+    padding: 0.125rem 0.375rem;
+  }
+}
+
+/* Feed items */
+.feed-item {
+  @media (max-width: 640px) {
+    padding: 0.75rem;
+    
+    &-header {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+    
+    &-content {
+      margin-top: 0.5rem;
+    }
+  }
+}
+
+/* Chart responsive */
+.chart {
+  @media (max-width: 640px) {
+    height: 250px;
+    
+    &-container {
+      padding: 0.5rem;
+    }
+  }
+}
+
+/* Responsive flex utilities */
+.flex-col {
+  @media (max-width: 768px) {
+    flex-direction: column;
+  }
+}
+
+.flex-row {
+  @media (max-width: 768px) {
+    flex-direction: column;
+  }
+}
+
+/* Gap utilities */
+.gap-2 {
+  @media (max-width: 640px) {
+    gap: 0.5rem;
+  }
+}
+
+.gap-4 {
+  @media (max-width: 640px) {
+    gap: 1rem;
+  }
+}
+
+/* Spacing utilities */
+.p-4 {
+  @media (max-width: 640px) {
+    padding: 1rem;
+  }
+}
+
+.p-6 {
+  @media (max-width: 640px) {
+    padding: 1.5rem;
+  }
+}
+
+.m-4 {
+  @media (max-width: 640px) {
+    margin: 1rem;
+  }
+}
+
+/* Touch-friendly targets */
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
+  
+  @media (max-width: 640px) {
+    min-height: 48px;
+    min-width: 48px;
+  }
+}
+
+/* Scrollable areas */
+.scroll-area {
+  @media (max-width: 640px) {
+    -webkit-overflow-scrolling: touch;
+    
+    &-horizontal {
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+    }
+  }
+}
+
+/* Swipe gestures (optional placeholder) */
+.swipe {
+  &-container {
+    overflow: hidden;
+    position: relative;
+  }
+  
+  &-wrapper {
+    display: flex;
+    transition: transform 0.3s ease;
+  }
+  
+  &-panel {
+    flex: 0 0 100%;
+  }
+}
+
+/* Pull to refresh indicator */
+.pull-to-refresh {
+  @media (max-width: 640px) {
+    &-indicator {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(to bottom, var(--color-background));
+    }
+  }
+}
+
+/* Safe area for notched devices */
+.safe-area {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Landscape mode adjustments */
+@media (orientation: landscape) and (max-height: 500px) {
+  .landscape-hide {
+    display: none;
+  }
+  
+  .landscape-content {
+    max-height: 100vh;
+    overflow-y: auto;
+  }
+  
+  .landscape-p-2 {
+    padding: 0.5rem;
+  }
+}
