@@ -5,6 +5,7 @@ This runbook guides you through verifying the end-to-end demo included in the fe
 ## Overview
 
 The demo (`demos/demo_end_to_end.py`) showcases a lightweight flow:
+
 1. Fetch synthetic data via public data sources.
 2. Register a data product in the Data Mesh Registry.
 3. Generate a synthetic training dataset and persist it as Parquet.
@@ -103,6 +104,7 @@ rm -rf .venv
 ## Extending the Demo
 
 You can extend this runbook to:
+
 - Replace synthetic data with a real fetch from OpenSky (requires network and respects rate limits).
 - Swap the tiny training pass for a proper model training step (e.g., using the ML pipeline in `training/production_ml_pipeline.py`).
 - Push the resulting model to Hugging Face Hub (requires HF_TOKEN secret).
