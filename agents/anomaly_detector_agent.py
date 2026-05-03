@@ -1,13 +1,14 @@
 """
 Anomaly Detection Agent: Real-time monitoring + self-calibration
-Uses statistical models + LLM reasoning for explainable anomalies.
+Uses statistical models + ML models + LLM reasoning for explainable anomalies.
 
 This agent implements a multi-method anomaly detection approach:
 1. Statistical detection (Z-score, IQR)
-2. Temporal pattern detection (time-series analysis)
-3. Contextual analysis (domain knowledge via LLM)
+2. ML-based detection (Isolation Forest, One-Class SVM)
+3. Temporal pattern detection (time-series analysis)
+4. Contextual analysis (domain knowledge via LLM)
 
-The ensemble voting system requires 2/3 methods to agree for anomaly classification.
+The ensemble voting system uses weighted voting from all methods for anomaly classification.
 """
 
 from langchain_groq import ChatGroq
@@ -18,18 +19,25 @@ from datetime import datetime, timedelta
 import json
 import asyncio
 import re
+from sklearn.ensemble import IsolationForest
+from sklearn.svm import OneClassSVM
+from sklearn.preprocessing import StandardScaler
+
+import os
 
 
 class AnomalyDetectorAgent:
     """
-    Multi-method anomaly detection agent with self-calibration.
+    Multi-method anomaly detection agent with self-calibration and ML models.
     
     Features:
     - Statistical analysis using Z-scores and IQR
+    - ML-based detection (Isolation Forest, One-Class SVM)
     - Temporal pattern detection for behavioral changes
     - Contextual reasoning via Groq LLM
-    - Ensemble voting for final decisions
+    - Weighted ensemble voting for final decisions
     - Built-in metrics tracking for precision/recall/F1
+    - Online learning capabilities
     
     Args:
         llm: Optional LLM instance (defaults to Groq Llama 3.1 70B)
@@ -41,6 +49,15 @@ class AnomalyDetectorAgent:
             temperature=0.05,
             groq_api_key=os.environ.get("GROQ_API_KEY", "")  # SECURITY: Environment variable
         )
+        
+        # ML models for anomaly detection
+        self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
+        self.one_class_svm = OneClassSVM(kernel='rbf', gamma='auto')
+        self.scaler = StandardScaler()
+        self.ml_models_trained = False
+        self.ml_feature_names = ["velocity", "altitude", "vertical_rate", "signal_strength"]
+        
+        # Historical data for statistical methods
         
         # Historical data for statistical methods
         self.history: Dict[str, list] = defaultdict(list)
@@ -64,6 +81,124 @@ class AnomalyDetectorAgent:
             "recall": 0.0,
             "f1": 0.0
         }
+    
+    def extract_ml_features(self, entity_id: str) -> np.ndarray:
+        """Extract features for ML models from history"""
+        if entity_id not in self.history or len(self.history[entity_id]) < 10:
+            return np.array([]).reshape(0, len(self.ml_feature_names))
+        
+        recent_history = self.history[entity_id][-50:]  # Last 50 measurements
+        features = []
+        
+        for m in recent_history:
+            feature_vector = [
+                m.get("velocity", 0),
+                m.get("altitude", 0),
+                m.get("vertical_rate", 0),
+                m.get("signal_strength", 0.5)
+            ]
+            features.append(feature_vector)
+        
+        return np.array(features)
+    
+    def train_ml_models(self, entity_id: str = None) -> bool:
+        """Train ML models using historical data"""
+        try:
+            # Collect training data from all entities or specific entity
+            all_features = []
+            entities = [entity_id] if entity_id else list(self.history.keys())
+            
+            for eid in entities:
+                features = self.extract_ml_features(eid)
+                if len(features) > 0:
+                    all_features.append(features)
+            
+            if not all_features:
+                return False
+            
+            # Combine all features
+            X = np.vstack(all_features)
+            
+            # Scale features
+            X_scaled = self.scaler.fit_transform(X)
+            
+            # Train Isolation Forest
+            self.isolation_forest.fit(X_scaled)
+            
+            # Train One-Class SVM (only on normal data - first 80%)
+            normal_samples = X_scaled[:int(0.8 * len(X_scaled))]
+            if len(normal_samples) > 0:
+                self.one_class_svm.fit(normal_samples)
+            
+            self.ml_models_trained = True
+            return True
+            
+        except Exception as e:
+            print(f"ML model training failed: {e}")
+            return False
+    
+    async def detect_ml_based(
+        self, 
+        entity_id: str, 
+        measurement: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Detect anomalies using ML models (Isolation Forest, One-Class SVM).
+        
+        Args:
+            entity_id: Unique identifier for the entity
+            measurement: Dict with measurement data
+            
+        Returns:
+            Dict with method, anomaly status, and scores
+        """
+        if not self.ml_models_trained:
+            return {
+                "method": "ml_based",
+                "anomaly": False,
+                "reason": "ML models not trained yet"
+            }
+        
+        try:
+            # Extract features
+            features = self.extract_ml_features(entity_id)
+            if len(features) == 0:
+                return {
+                    "method": "ml_based",
+                    "anomaly": False,
+                    "reason": "Insufficient data"
+                }
+            
+            # Use the latest measurement
+            latest_features = features[-1].reshape(1, -1)
+            latest_scaled = self.scaler.transform(latest_features)
+            
+            # Isolation Forest prediction
+            iso_score = self.isolation_forest.decision_function(latest_scaled)[0]
+            iso_anomaly = self.isolation_forest.predict(latest_scaled)[0] == -1
+            
+            # One-Class SVM prediction
+            svm_score = self.one_class_svm.decision_function(latest_scaled)[0]
+            svm_anomaly = self.one_class_svm.predict(latest_scaled)[0] == -1
+            
+            # Combine predictions (either model says anomaly)
+            is_anomaly = iso_anomaly or svm_anomaly
+            
+            return {
+                "method": "ml_based",
+                "anomaly": is_anomaly,
+                "isolation_forest_score": float(iso_score),
+                "svm_score": float(svm_score),
+                "iso_anomaly": bool(iso_anomaly),
+                "svm_anomaly": bool(svm_anomaly)
+            }
+            
+        except Exception as e:
+            return {
+                "method": "ml_based",
+                "anomaly": False,
+                "error": str(e)
+            }
     
     async def detect_statistical(
         self, 
@@ -271,17 +406,17 @@ Return JSON: {{"anomaly": true|false, "severity": "low"|"medium"|"high", "reason
                 "anomaly": False,
                 "error": str(e)
             }
-    
+            
     async def detect_comprehensive(
         self, 
         entity_id: str, 
         entity_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Combine all detection methods for final verdict using ensemble voting.
+        Combine all detection methods for final verdict using weighted ensemble voting.
         
-        Requires 2/3 methods to agree for anomaly classification.
-        Calculates confidence based on agreement ratio.
+        Uses weighted voting from all methods (statistical, temporal, ML-based, contextual).
+        Calculates confidence based on agreement and method reliability.
         
         Args:
             entity_id: Unique identifier for the entity
@@ -293,20 +428,31 @@ Return JSON: {{"anomaly": true|false, "severity": "low"|"medium"|"high", "reason
         # Run all detectors in parallel
         statistical = await self.detect_statistical(entity_id, entity_data)
         temporal = await self.detect_temporal(entity_id, entity_data)
+        ml_based = await self.detect_ml_based(entity_id, entity_data)
         contextual = await self.detect_contextual(entity_id, entity_data)
         
-        # Voting system: 2/3 methods agree = anomaly
-        anomaly_votes = sum([
-            statistical.get("anomaly", False),
-            temporal.get("anomaly", False),
-            contextual.get("anomaly", False)
+        # Weighted voting system (statistical=1.0, temporal=0.8, ml=1.2, contextual=1.0)
+        weights = {
+            "statistical": 1.0,
+            "temporal": 0.8,
+            "ml_based": 1.2,  # ML models get higher weight
+            "contextual": 1.0
+        }
+        
+        weighted_votes = sum([
+            weights["statistical"] if statistical.get("anomaly", False) else 0,
+            weights["temporal"] if temporal.get("anomaly", False) else 0,
+            weights["ml_based"] if ml_based.get("anomaly", False) else 0,
+            weights["contextual"] if contextual.get("anomaly", False) else 0
         ])
         
-        # Decision: 2/3 methods agree = anomaly
-        is_anomaly = anomaly_votes >= 2
+        total_weight = sum(weights.values())
         
-        # Calculate confidence
-        confidence = anomaly_votes / 3.0
+        # Decision: weighted votes > 50% of total weight
+        is_anomaly = weighted_votes > (total_weight / 2)
+        
+        # Calculate confidence (normalized weighted agreement)
+        confidence = weighted_votes / total_weight
         
         return {
             "entity_id": entity_id,
@@ -315,6 +461,7 @@ Return JSON: {{"anomaly": true|false, "severity": "low"|"medium"|"high", "reason
             "methods": {
                 "statistical": statistical,
                 "temporal": temporal,
+                "ml_based": ml_based,
                 "contextual": contextual
             },
             "timestamp": datetime.now().isoformat(),

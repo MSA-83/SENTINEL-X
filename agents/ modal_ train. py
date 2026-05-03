@@ -1,0 +1,198 @@
+# SENTINEL-X Agent Training - MODAL DEPLOYMENT
+# modal.com - Free A100 GPU
+# Run: modal run modal_train.py
+# Schedule: modal cron "0 2 * * 1"
+import modal
+app = modal.App("sentinel-x-agent")
+gpu_config = modal.gpu.A100(count=1, memory=80)
+volume = modal.Volume.from_name("sentinel-x-data", create_if_missing=True)
+
+@app.function(gpu=gpu_config, timeout=36000, volumes={"/data": volume})
+def train_classifier(epochs=10, batch_size=8):
+    import os, json, asyncio, re, numpy as np, pandas as pd
+    from datetime import datetime
+    from langchain_groq import ChatGroq
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import StandardScaler
+    import joblib
+    
+    print("SENTINEL-X - Modal A100")
+    llm = ChatGroq(model="llama-3.1-70b-versatile", temperature=0.05, groq_api_key=os.environ["GROQ_API_KEY"]) 
+    
+    class Agent:
+        def __init__(self, ver):
+            self.ver = ver
+            self.feature_names = ["v", "a", "ld", "od", "t", "s"]
+            self.scaler = StandardScaler()
+            self.clf = RandomForestClassifier(n_estimators=100, random_state=42)
+            self.is_trained = False
+            self.m = {"t":0,"c":0,"i":0,"a":0.0}
+            
+        def feats(self, e):
+            # Extract and normalize features (return 1D array for training)
+            v_norm = min(e.get("v",0)/900, 1)
+            a_norm = min(e.get("a",0)/45000, 1)
+            ld_norm = abs(e.get("ld",0))
+            od_norm = abs(e.get("od",0))
+            t_norm = 0  # Placeholder - could be time-based feature
+            s_norm = 0.5  # Placeholder - stability feature
+            return np.array([v_norm, a_norm, ld_norm, od_norm, t_norm, s_norm])
+            
+        async def cls(self, e):
+            features = self.feats(e)
+            
+            if self.is_trained:
+                # Use ML model for prediction
+                try:
+                    # Reshape for scaler (expects 2D input)
+                    features_2d = features.reshape(1, -1)
+                    features_scaled = self.scaler.transform(features_2d)
+                    pred = self.clf.predict(features_scaled)[0]
+                    prob = self.clf.predict_proba(features_scaled)[0]
+                    confidence = max(prob)
+                    class_label = "anomaly" if pred == 1 else "normal"
+                    
+                    # For low confidence predictions, optionally use LLM
+                    if confidence < 0.6:
+                        sc = np.dot(features, [0.25, 0.15, 0.20, 0.20, 0.10, 0.10])  # Original weighted score
+                        r = await asyncio.to_thread(llm.invoke, f"Analyze: score={sc:.2f}")
+                        m = re.search(r"\{.+\}", r.content, re.DOTALL)
+                        rs = json.loads(m.group()) if m else {"class":"suspicious","confidence":sc} 
+                        return {"class":rs["class"],"confidence":rs["confidence"],"score":float(sc)}
+                    else:
+                        self.m["t"]+=1
+                        return {"class":class_label,"confidence":float(confidence),"score":float(confidence)}
+                except Exception as ex:
+                    print(f"ML prediction failed: {ex}")
+                    # Fallback to original method
+                    return await self._original_cls(e)
+            else:
+                # If not trained yet, use original method
+                return await self._original_cls(e)
+                
+        async def _original_cls(self, e):
+            """Original classification method using hand-crafted weights"""
+            sc = sum(self._original_feats(e)[k]*{"v":0.25,"a":0.15,"ld":0.20,"od":0.20,"t":0.10,"s":0.10}[k] for k in ["v","a","ld","od","t","s"]) 
+            try:
+                r = await asyncio.to_thread(llm.invoke, f"Analyze: score={sc:.2f}")
+                m = re.search(r"\{.+\}", r.content, re.DOTALL)
+                rs = json.loads(m.group()) if m else {"class":"suspicious","confidence":sc} 
+                self.m["t"]+=1
+                return {"class":rs["class"],"confidence":rs["confidence"],"score":sc} 
+            except:
+                return {"class":"unknown","confidence":0}
+             
+        def _original_feats(self, e):
+            return {"v":min(e.get("v",0)/900,1),"a":min(e.get("a",0)/45000,1),"ld":abs(e.get("ld",0)),"od":abs(e.get("od",0)),"t":0,"s":0.5}
+             
+        def train_model(self, X, y):
+            """Train the RandomForest model"""
+            if len(X) == 0 or len(y) == 0:
+                return False
+                
+            # Scale features
+            X_scaled = self.scaler.fit_transform(X)
+            
+            # Train model
+            self.clf.fit(X_scaled, y)
+            self.is_trained = True
+            return True
+             
+        def fb(self, p, a):
+            if p==a: self.m["c"]+=1
+            else: self.m["i"]+=1
+            t=self.m["c"]+self.m["i"] 
+            if t>0: self.m["a"]=self.m["c"]/t
+    
+    # Generate synthetic training data
+    np.random.seed(42)
+    d = []
+    for i in range(200): 
+        an = np.random.rand() > 0.8 
+        if an:
+            v = int(np.random.randint(0, 100))
+            a = int(np.random.randint(0, 5000))
+        else:
+            v = int(np.random.randint(400, 550))
+            a = int(np.random.randint(30000, 40000))
+        d.append({
+            "id": f"e{i:04d}",
+            "v": v,
+            "a": a,
+            "ld": float(np.random.uniform(-0.5, 0.5)),
+            "od": float(np.random.uniform(-0.5, 0.5)),
+            "label": "anomaly" if an else "normal"
+        }) 
+    
+    df = pd.DataFrame(d)
+    print(f"Data: {len(df)}") 
+    
+    # Prepare features and labels for training
+    X = np.array([ag.feats(r.to_dict()) for _, r in df.iterrows()])
+    y = np.array([1 if r["label"] == "anomaly" else 0 for _, r in df.iterrows()])
+    
+    print(f"Feature matrix shape: {X.shape}")
+    print(f"Class distribution: {np.bincount(y)}")
+    
+    # Initialize agent
+    ag = Agent(f"v1-modal-{datetime.now():%Y%m%d}")
+    
+    # Split data
+    from sklearn.model_selection import train_test_split
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    
+    # Train the model
+    print("Training RandomForest model...")
+    ag.scaler.fit(X_train)
+    X_train_scaled = ag.scaler.transform(X_train)
+    ag.clf.fit(X_train_scaled, y_train)
+    ag.is_trained = True
+    
+    # Evaluate on test set
+    from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+    X_test_scaled = ag.scaler.transform(X_test)
+    y_pred = ag.clf.predict(X_test_scaled)
+    y_pred_proba = ag.clf.predict_proba(X_test_scaled)
+    
+    acc = accuracy_score(y_test, y_pred)
+    print(f"Test accuracy: {acc:.0%}")
+    print(f"\nClassification Report:")
+    print(classification_report(y_test, y_pred, target_names=["normal", "anomaly"]))
+    
+    # Feature importance
+    importances = ag.clf.feature_importances_
+    print(f"\nFeature Importances:")
+    for name, imp in zip(ag.feature_names, importances):
+        print(f"  {name}: {imp:.3f}")
+    
+    # Save model and scaler
+    model_path = f"/data/clf_{ag.ver}.joblib"
+    scaler_path = f"/data/scaler_{ag.ver}.joblib"
+    joblib.dump(ag.clf, model_path)
+    joblib.dump(ag.scaler, scaler_path)
+    print(f"\nModel saved to: {model_path}")
+    print(f"Scaler saved to: {scaler_path}")
+    
+    # Save metadata
+    metadata = {
+        "version": ag.ver,
+        "test_acc": float(acc),
+        "feature_names": ag.feature_names,
+        "feature_importances": importances.tolist(),
+        "model_path": model_path,
+        "scaler_path": scaler_path,
+        "training_samples": len(X_train),
+        "test_samples": len(X_test)
+    }
+    
+    with open(f"/data/metadata_{ag.ver}.json", "w") as f: 
+        json.dump(metadata, f, indent=2)
+    
+    print(f"\nMetadata saved to: /data/metadata_{ag.ver}.json")
+    
+    return {"status":"ok", "version": ag.ver, "test_acc": float(acc), "model_path": model_path}
+
+@app.local_entrypoint() 
+def main():
+    r = train_classifier.remote(epochs=10)
+    print(r)
