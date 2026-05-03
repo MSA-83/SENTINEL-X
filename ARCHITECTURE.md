@@ -538,6 +538,13 @@ python3 datasets/download_datasets.py
 railway up
 
 #Monitor
+# Run end-to-end demo (optional)
+python demos/demo_end_to_end.py
+# Run end-to-end demo (optional)
+python demos/demo_end_to_end.py
+
+# Run end-to-end demo (optional)
+python demos/demo_end_to_end.py
 # Open: https://grafana.com/your-dashboard
 ```
 
