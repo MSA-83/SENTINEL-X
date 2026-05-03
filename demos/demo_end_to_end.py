@@ -7,15 +7,17 @@ using only 100% free tooling in Sentinel-X.
 Note: Minor patch to retrigger PR automation in CI.
 """
 
+import asyncio
 import json
 import os
 from datetime import datetime
 from pathlib import Path
-import asyncio
 
 from sentinel_x.data_mesh.abstraction_layer import DataMeshRegistry, DataProduct
 from sentinel_x.data_sources.public_data_sources import PublicDatasetFetcher
-from sentinel_x.datasets.public_data_sources import PublicDatasetFetcher as SynFetcher  # alias
+from sentinel_x.datasets.public_data_sources import (
+    PublicDatasetFetcher as SynFetcher,  # alias
+)
 from sentinel_x.training.multi_modal_anomaly_detector import SyntheticDataset
 
 
@@ -39,10 +41,13 @@ async def run_demo():
         version="v1.0",
         sources=["synthetic", "opensky"],
         consumers=["ml", "analytics"],
-        metadata={"created_at": datetime.utcnow().isoformat(), "published": False},
+        metadata={"created_at": datetime.utcnow().isoformat(),
+                  "published": False},
     )
     registry.register_product(prod)
-    registry.publish_product(prod.product_id, "/datasets/processed/demo_training.parquet")
+    registry.publish_product(
+        prod.product_id, "/datasets/processed/demo_training.parquet"
+    )
 
     # 3) Prepare a tiny synthetic training dataset and save
     synth = SyntheticDataset()
@@ -54,6 +59,7 @@ async def run_demo():
     # 4) Run a tiny training pass if PyTorch is available (best effort)
     try:
         import torch
+
         if torch.cuda.is_available():
             device = "cuda"
         else:
@@ -69,3 +75,5 @@ async def run_demo():
 
 if __name__ == "__main__":
     asyncio.run(run_demo())
+
+// CI trigger patch for auto PR on End-to-End Demo
