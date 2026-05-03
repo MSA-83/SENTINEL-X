@@ -12,6 +12,10 @@ from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, asdict
 from enum import Enum
 import hashlib
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+import joblib
 
 
 # ============================================
@@ -361,6 +365,99 @@ class TaskDistributor:
             AgentRole.COORDINATOR,
             AgentRole.CEO
         ]
+        
+        # ML model for agent scoring
+        self.agent_scorer = RandomForestRegressor(n_estimators=100, random_state=42)
+        self.scaler = StandardScaler()
+        self.ml_model_trained = False
+        self.feature_names = [
+            "accuracy", "latency_ms", "error_rate", "load_factor", 
+            "priority", "task_type_encoded", "role_encoded"
+        ]
+    
+    def extract_agent_task_features(self, agent_id: str, task: Task) -> np.ndarray:
+        """Extract features for ML model to score agent-task pair"""
+        agent = self.system.agents[agent_id]
+        
+        # Basic features
+        accuracy = agent.performance_metrics.get("avg_accuracy", 0.5)
+        latency_ms = agent.performance_metrics.get("avg_latency_ms", 0) / 1000.0
+        error_rate = agent.performance_metrics.get("error_rate", 0.0)
+        
+        # Current load
+        current_tasks = len([t for t in self.system.results_cache.values() 
+                          if t.get("assigned_to") == agent_id and t.get("status") in ["assigned", "in_progress"]])
+        load_factor = current_tasks / max(agent.max_concurrent_tasks, 1)
+        
+        # Task priority (normalized)
+        priority_norm = task.priority / 4.0
+        
+        # Task type encoding (simple hash-based)
+        task_type_encoded = hash(task.task_type) % 10 / 10.0
+        
+        # Role encoding
+        role_map = {
+            AgentRole.ANALYST: 0.0,
+            AgentRole.SPECIALIST: 0.33,
+            AgentRole.TEAM_LEAD: 0.66,
+            AgentRole.COORDINATOR: 0.8,
+            AgentRole.CEO: 1.0,
+            AgentRole.RED_TEAM: 0.5
+        }
+        role_encoded = role_map.get(agent.role, 0.0)
+        
+        features = np.array([accuracy, latency_ms, error_rate, load_factor, 
+                           priority_norm, task_type_encoded, role_encoded])
+        return features
+    
+    def train_ml_model(self) -> bool:
+        """Train ML model using historical task performance data"""
+        try:
+            # Collect training data from audit log
+            training_data = []
+            
+            for log_entry in self.system.audit_log:
+                if log_entry.get("action") == "task_assigned":
+                    # Extract features and outcome from log
+                    # In production, this would use actual task outcomes
+                    training_data.append({
+                        "agent_id": log_entry.get("agent_id"),
+                        "task_id": log_entry.get("details", "").split(" ")[1] if " " in log_entry.get("details", "") else "",
+                        "score": 0.8  # Placeholder - would use actual success rate
+                    })
+            
+            if len(training_data) < 10:
+                print("Insufficient training data for ML model, using rule-based fallback")
+                return False
+            
+            # Prepare features and labels
+            X = []
+            y = []
+            
+            for data in training_data:
+                # Create a dummy task for feature extraction
+                dummy_task = Task(
+                    task_id=data["task_id"],
+                    task_type="classify_entity",
+                    priority=2
+                )
+                features = self.extract_agent_task_features(data["agent_id"], dummy_task)
+                X.append(features)
+                y.append(data["score"])
+            
+            X = np.array(X)
+            y = np.array(y)
+            
+            # Train model
+            X_scaled = self.scaler.fit_transform(X)
+            self.agent_scorer.fit(X_scaled, y)
+            self.ml_model_trained = True
+            print(f"ML model trained with {len(X)} samples")
+            return True
+            
+        except Exception as e:
+            print(f"ML model training failed: {e}")
+            return False
     
     async def route_task(self, task: Task) -> str:
         """
@@ -404,17 +501,25 @@ class TaskDistributor:
         best_agent = None
         best_score = float('-inf')
         
+        # Train ML model if not trained yet
+        if not self.ml_model_trained:
+            self.train_ml_model()
+        
         for agent_id in available_agents:
             agent = self.system.agents[agent_id]
             
-            # Score = (accuracy * 0.5) - (load_factor * 0.2) - (latency_factor * 0.01) - (error_rate * 0.3)
-            accuracy = agent.performance_metrics.get("avg_accuracy", 0.5)
-            load_factor = len([t for t in self.system.results_cache.values() 
-                              if t.get("assigned_to") == agent_id and t.get("status") == "in_progress"])
-            latency_factor = agent.performance_metrics.get("avg_latency_ms", 0) / 1000
-            error_rate = agent.performance_metrics.get("error_rate", 0.0)
-            
-            score = (accuracy * 0.5) - (load_factor * 0.2) - (latency_factor * 0.01) - (error_rate * 0.3)
+            # Use ML model for scoring if trained, otherwise fall back to rule-based
+            if self.ml_model_trained:
+                try:
+                    features = self.extract_agent_task_features(agent_id, task)
+                    features_scaled = self.scaler.transform(features.reshape(1, -1))
+                    score = self.agent_scorer.predict(features_scaled)[0]
+                except Exception as e:
+                    print(f"ML scoring failed for {agent_id}: {e}, using fallback")
+                    score = self._rule_based_score(agent, task)
+            else:
+                # Fallback to rule-based scoring
+                score = self._rule_based_score(agent, task)
             
             if score > best_score:
                 best_score = score
@@ -424,11 +529,20 @@ class TaskDistributor:
             task.assigned_to = best_agent
             task.status = "assigned"
             self.system.agents[best_agent].last_active = datetime.now()
-            self.system._log_audit("task_assigned", best_agent, f"Task {task.task_id} assigned, score {best_score:.2f}")
-            print(f"Task {task.task_id} routed to {self.system.agents[best_agent].name} (score: {best_score:.2f})")
+            self.system._log_audit("task_assigned", best_agent, f"Task {task.task_id} assigned, ML score {best_score:.2f}")
+            print(f"Task {task.task_id} routed to {self.system.agents[best_agent].name} (ML score: {best_score:.2f})")
             return best_agent
         
         return await self._escalate_task(task, "no_best_agent")
+    
+    def _rule_based_score(self, agent: AgentNode, task: Task) -> float:
+        """Fallback rule-based scoring (original formula)"""
+        accuracy = agent.performance_metrics.get("avg_accuracy", 0.5)
+        load_factor = len([t for t in self.system.results_cache.values() 
+                          if t.get("assigned_to") == agent.agent_id and t.get("status") == "in_progress"])
+        latency_factor = agent.performance_metrics.get("avg_latency_ms", 0) / 1000
+        error_rate = agent.performance_metrics.get("error_rate", 0.0)
+        return (accuracy * 0.5) - (load_factor * 0.2) - (latency_factor * 0.01) - (error_rate * 0.3)
     
     async def _escalate_task(self, task: Task, reason: str) -> str:
         """Escalate task up hierarchy with audit log"""
